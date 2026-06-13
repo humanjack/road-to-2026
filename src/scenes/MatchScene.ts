@@ -47,6 +47,7 @@ interface Player {
   kit: number; // shirt colour (team primary, or GK lime)
   shorts: number; // hips + legs (darkened kit, or team-tinted for GK)
   shoulderHi: number; // shoulder caps (lightened kit — fake top-light)
+  rim: number; // luminance-adaptive torso outline so any kit reads on the dark pitch
   skin: number;
   hair: number;
   phase: number; // run-cycle phase offset so the 10 figures don't move in lockstep
@@ -60,7 +61,10 @@ const BR = 9; // ball radius
 // is carried by the kit colour + the dyn centre dot, never by skin/hair.
 const SKIN = [0xf0c39a, 0xe8b07d, 0xc68642, 0x8d5524, 0x5a3a22];
 const HAIR = [0x1b1b1f, 0x2b1d12, 0x4a2f18, 0x6b4a2a, 0x111014];
-const GK_KIT = 0x7be83c; // keeper shirt — high-vis lime, contrasts both teams + pitch
+// Keeper shirts: two distinct high-vis colours so opposing GKs never look alike,
+// and both kept off pitch-lime (which doubles as the boost/SURGE FX colour).
+const GK_KIT_HOME = 0xffc53d; // amber
+const GK_KIT_AWAY = 0x19d3f0; // cyan
 const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-bar render
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
@@ -351,7 +355,10 @@ export class MatchScene extends Phaser.Scene {
   private makePlayer(side: Side, role: Role, hx: number, hy: number, idx: number): Player {
     const isGK = role === 'GK';
     const teamColor = side === 'home' ? this.homeColor : this.awayColor;
-    const kit = isGK ? GK_KIT : teamColor;
+    const kit = isGK ? (side === 'home' ? GK_KIT_HOME : GK_KIT_AWAY) : teamColor;
+    // perceived luminance → pick a rim that contrasts the kit (dark kit gets a
+    // light edge, light kit a dark edge) so navy/black shirts don't vanish.
+    const lum = 0.299 * ((kit >> 16) & 0xff) + 0.587 * ((kit >> 8) & 0xff) + 0.114 * (kit & 0xff);
     return {
       side,
       role,
@@ -369,6 +376,7 @@ export class MatchScene extends Phaser.Scene {
       // GK keeps team identity via team-tinted shorts; outfielders get darkened kit.
       shorts: isGK ? this.shade(teamColor, 0.8) : this.shade(kit, 0.62),
       shoulderHi: this.shade(kit, 1.14),
+      rim: lum > 140 ? C.deep : C.light,
       skin: SKIN[(idx * 2 + 1) % SKIN.length],
       hair: HAIR[(idx * 3) % HAIR.length],
       phase: idx * 1.7, // deterministic desync (avoid Math.random for reproducibility)
@@ -1187,9 +1195,9 @@ export class MatchScene extends Phaser.Scene {
     this.pulse = this.reduceMotion ? 0 : 0.5 + 0.5 * Math.sin(this.time.now * 0.008);
 
     this.dyn.clear();
-    // per-team centre marker — colour-independent team identity (accessibility)
+    // per-team centre marker — colour-independent team identity (accessibility).
+    // Keepers get it too, so the two GKs are tellable apart by side, not just kit.
     for (const p of this.players) {
-      if (p.role === 'GK') continue;
       this.dyn.fillStyle(p.side === 'home' ? C.deep : C.white, 0.85);
       this.dyn.fillCircle(p.x, p.y, 4);
     }
@@ -1250,6 +1258,9 @@ export class MatchScene extends Phaser.Scene {
     g.fillEllipse(-0.15 * PR, 0, 1.15 * PR, 1.3 * PR);
     g.fillStyle(p.kit, 1);
     g.fillEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
+    // contrast rim so dark kits keep a crisp edge against the dark pitch
+    g.lineStyle(1.5, p.rim, 0.5);
+    g.strokeEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
     // shoulder caps — lightened kit, a cheap fake top-light that gives the torso form
     g.fillStyle(p.shoulderHi, 1);
     g.fillCircle(0.15 * PR, 0.6 * PR, 0.32 * PR);
