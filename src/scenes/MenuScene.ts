@@ -3,9 +3,11 @@ import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { hasSavedTournament, getSave, isUnlocked } from '../core/save';
 import { audio } from '../core/audio';
 import { TEAMS } from '../data/teams';
-import { WORLD_ELEVEN } from '../data/extras';
+import { WORLD_ELEVEN, resolveTeam } from '../data/extras';
+import { displayName } from '../data/names';
 import { RNG, randomSeed } from '../core/rng';
 import { transitionTo } from '../ui/transitions';
+import { drawTrophy } from '../ui/trophy';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -59,6 +61,9 @@ export class MenuScene extends Phaser.Scene {
 
     // Aurora Sphere mark
     this.drawSphere(cx, 430);
+
+    // Persistent trophy shelf for past cup wins (top-left, clear of the title).
+    this.drawChampionShelf();
 
     const continueAvailable = hasSavedTournament();
 
@@ -169,6 +174,50 @@ export class MenuScene extends Phaser.Scene {
         g.fillStyle(col % 3 === 0 ? C.cyan : C.gold, 0.5);
         g.fillCircle(40 + col * 14, 40 + r * 14, 2.4);
       }
+    }
+  }
+
+  private drawChampionShelf(): void {
+    const stats = getSave().stats;
+    if (stats.tournamentsWon <= 0) return;
+    const rm = getSave().settings.reduceMotion;
+    const x0 = 44;
+    const yRow = 214;
+
+    this.add
+      .text(x0, 168, 'CHAMPIONSHIPS', { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.mid })
+      .setLetterSpacing(2);
+
+    const shown = Math.min(5, stats.tournamentsWon);
+    for (let i = 0; i < shown; i++) {
+      const t = drawTrophy(this, x0 + 22 + i * 44, yRow, 0.24, true);
+      if (!rm) {
+        this.tweens.add({
+          targets: t,
+          scale: 0.27,
+          duration: 1400,
+          delay: i * 150,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        });
+      }
+    }
+    if (stats.tournamentsWon > 5) {
+      this.add
+        .text(x0 + 22 + 5 * 44, yRow, `+${stats.tournamentsWon - 5}`, { fontFamily: FONT_DISPLAY, fontSize: '18px', color: CSS.gold })
+        .setOrigin(0, 0.5);
+    }
+
+    const champ = stats.lastChampionTeamId ? resolveTeam(stats.lastChampionTeamId) : null;
+    if (champ) {
+      this.add
+        .text(x0, yRow + 42, `REIGNING CHAMPION  ·  ${displayName(champ).toUpperCase()}`, {
+          fontFamily: FONT_BODY,
+          fontSize: '13px',
+          color: CSS.gold,
+        })
+        .setLetterSpacing(1);
     }
   }
 

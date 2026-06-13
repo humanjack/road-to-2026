@@ -253,10 +253,13 @@ export function recordMatch(goalsScored: number): void {
   writeSave(save);
 }
 
-export function recordTournament(won: boolean): void {
+export function recordTournament(won: boolean, championTeamId?: string): void {
   const save = loadSave();
   save.stats.tournamentsPlayed += 1;
-  if (won) save.stats.tournamentsWon += 1;
+  if (won) {
+    save.stats.tournamentsWon += 1;
+    if (championTeamId) save.stats.lastChampionTeamId = championTeamId;
+  }
   writeSave(save);
 }
 
