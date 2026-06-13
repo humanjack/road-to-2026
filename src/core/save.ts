@@ -31,14 +31,31 @@ function storage(): Storage | null {
   }
 }
 
-// Migrate older save shapes forward. Currently only v1 exists, but the hook is
-// here so future versions never wipe a player's progress.
+// Structural validation so a corrupt / hand-edited / future-incompatible
+// tournament blob never reaches the render path and crashes resume.
+export function isValidTournament(t: any): boolean {
+  if (!t || typeof t !== 'object') return false;
+  if (typeof t.userTeamId !== 'string' || !t.userTeamId) return false;
+  if (!['groups', 'knockout', 'done'].includes(t.phase)) return false;
+  if (!Array.isArray(t.groups) || t.groups.length !== 12) return false;
+  if (!Array.isArray(t.bracket)) return false;
+  for (const g of t.groups) {
+    if (!g || !Array.isArray(g.teamIds) || g.teamIds.length !== 4) return false;
+    if (!Array.isArray(g.fixtures) || g.fixtures.length !== 6) return false;
+  }
+  return true;
+}
+
+// Migrate older save shapes forward. A version newer than we understand, or a
+// structurally-broken tournament, drops the cup (keeps coins/settings/stats).
 function migrate(raw: any): SaveGame {
   const base = defaultSave();
   if (!raw || typeof raw !== 'object') return base;
+  const incompatible = typeof raw.version === 'number' && raw.version > SAVE_VERSION;
+  const tournament = !incompatible && isValidTournament(raw.tournament) ? raw.tournament : null;
   const save: SaveGame = {
     version: SAVE_VERSION,
-    tournament: raw.tournament ?? null,
+    tournament,
     coins: typeof raw.coins === 'number' ? raw.coins : 0,
     settings: { ...base.settings, ...(raw.settings ?? {}) },
     stats: { ...base.stats, ...(raw.stats ?? {}) },
@@ -81,7 +98,8 @@ export function getSave(): SaveGame {
 
 export function saveTournament(t: TournamentState | null): void {
   const save = loadSave();
-  save.tournament = t;
+  // A finished cup is terminal — never persist it (avoids a stale 'done' blob).
+  save.tournament = t && t.phase === 'done' ? null : t;
   writeSave(save);
 }
 

@@ -46,14 +46,19 @@ export class TournamentScene extends Phaser.Scene {
       const matchId = this.game.registry.get('lastMatchId') as string | null;
       if (result) this.applyUserResultAndAdvance(result, matchId);
       this.game.registry.set('lastMatchResult', null);
+      this.game.registry.set('lastMatchId', null);
+    }
+
+    // A completed cup awards rewards and transitions to the Result screen
+    // immediately — never leave an interactive window where the award could be
+    // skipped (e.g. by tapping MENU) or double-fired.
+    if (this.state.phase === 'done') {
+      this.gotoChampion();
+      return;
     }
 
     this.cameras.main.setBackgroundColor(C.indigo);
     this.render();
-
-    if (this.state.phase === 'done') {
-      this.time.delayedCall(400, () => this.gotoChampion());
-    }
   }
 
   // --- orchestration -----------------------------------------------------
@@ -152,10 +157,13 @@ export class TournamentScene extends Phaser.Scene {
     });
   }
 
+  private awarded = false;
+
   private gotoChampion(): void {
     const champ = this.state.championId ? map[this.state.championId] : null;
     const userWon = this.state.championId === this.state.userTeamId;
-    if (this.state.phase === 'done') {
+    if (this.state.phase === 'done' && !this.awarded) {
+      this.awarded = true; // idempotent: award exactly once per completed cup
       recordTournament(userWon);
       addCoins(userWon ? 500 : 120);
       // clear so "Continue" doesn't resume a finished cup

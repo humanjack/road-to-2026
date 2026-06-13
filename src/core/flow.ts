@@ -58,12 +58,10 @@ export function simNonUserGroupFixtures(state: TournamentState, teams: Team[], r
   }
 }
 
-// Advance to the next matchday; once 3 are done, build the knockout bracket.
+// Advance to the next matchday; once all group fixtures are done, build the bracket.
 export function completeGroupMatchday(state: TournamentState, teams: Team[]): void {
   state.groupMatchday += 1;
-  if (state.groupMatchday >= 3 || groupsComplete(state)) {
-    if (groupsComplete(state)) startKnockout(state, teamMapOf(teams));
-  }
+  if (groupsComplete(state)) startKnockout(state, teamMapOf(teams));
 }
 
 // --- KNOCKOUT -------------------------------------------------------------

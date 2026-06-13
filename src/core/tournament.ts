@@ -182,7 +182,7 @@ export function roundLabel(r: KnockoutRound): string {
 }
 
 // Build the full bracket tree from 32 ordered slots (1 vs 32, 2 vs 31, ...).
-export function buildBracket(slots: string[], userTeamId: string): BracketMatch[] {
+export function buildBracket(slots: string[]): BracketMatch[] {
   const matches: BracketMatch[] = [];
   // R32
   for (let i = 0; i < 16; i++) {
@@ -208,13 +208,12 @@ export function buildBracket(slots: string[], userTeamId: string): BracketMatch[
       m.nextSlot = i % 2 === 0 ? 'home' : 'away';
     }
   }
-  void userTeamId;
   return matches;
 }
 
 export function startKnockout(state: TournamentState, teams: Record<string, Team>): void {
   const slots = qualifiers(state, teams);
-  state.bracket = buildBracket(slots, state.userTeamId);
+  state.bracket = buildBracket(slots);
   state.phase = 'knockout';
   state.knockoutRound = 'R32';
 }
@@ -233,6 +232,7 @@ export function applyKnockoutResult(state: TournamentState, matchId: string, res
   if (!m) return;
   m.result = result;
   const winner = result.winnerId ?? (result.homeGoals >= result.awayGoals ? result.homeId : result.awayId);
+  if (result.winnerId == null) result.winnerId = winner; // keep stored result self-consistent
   if (m.round === 'F') {
     state.championId = winner;
     return;

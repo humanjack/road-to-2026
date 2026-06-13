@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
+import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
 import { TEAMS } from '../data/teams';
 import type { Team, MatchResult, Difficulty } from '../data/types';
 import { recordMatch } from '../core/save';
@@ -37,6 +37,7 @@ interface Player {
 
 const PR = 15; // player radius
 const BR = 9; // ball radius
+const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-bar render
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -464,7 +465,7 @@ export class MatchScene extends Phaser.Scene {
     if (!p || this.ball.ownerIdx !== this.activeIdx) {
       return;
     }
-    const charge = Math.min(1, (this.time.now - this.chargeStart) / 700);
+    const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
     // aim: face direction, biased toward opponent goal if little input
     let ax = p.faceX;
     let ay = p.faceY;
@@ -546,7 +547,6 @@ export class MatchScene extends Phaser.Scene {
         return;
       }
       const attackDir = p.side === 'home' ? 1 : -1;
-      const ownGoalX = p.side === 'home' ? this.px : this.px + this.pw;
       const oppGoalX = p.side === 'home' ? this.px + this.pw : this.px;
       const oppGoalY = this.py + this.ph / 2;
       const owns = this.ball.ownerIdx === i;
@@ -554,18 +554,13 @@ export class MatchScene extends Phaser.Scene {
 
       let tx: number;
       let ty: number;
-      const speedScale = p.side === 'away' || p.isUser ? this.diff.aiSpeed : 1;
+      const speedScale = p.side === 'away' ? this.diff.aiSpeed : 1;
 
       if (owns) {
         // dribble toward opponent goal; shoot if in range; pass if pressured
         const distGoal = Math.abs(p.x - oppGoalX);
         const pressed = this.nearestOpponentDist(p) < 70;
-        if (distGoal < this.diff.aiShootRange && p.side === 'away') {
-          this.aiShoot(p, oppGoalX, oppGoalY);
-          return;
-        }
-        if (distGoal < 240 && p.side === 'home') {
-          // home AI teammate (not user) also shoots when very close
+        if (distGoal < this.diff.aiShootRange) {
           this.aiShoot(p, oppGoalX, oppGoalY);
           return;
         }
@@ -575,7 +570,7 @@ export class MatchScene extends Phaser.Scene {
         }
         tx = oppGoalX;
         ty = oppGoalY + (p.y - (this.py + this.ph / 2)) * 0.3;
-      } else if (i === chaser[p.side] && this.shouldChase(p, teamHasBall)) {
+      } else if (i === chaser[p.side] && !teamHasBall) {
         tx = this.ball.x;
         ty = this.ball.y;
       } else {
@@ -583,16 +578,10 @@ export class MatchScene extends Phaser.Scene {
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
         tx = p.hx + attackDir * (teamHasBall ? 70 : -10) + ballAdvance * 90 * attackDir;
         ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.18;
-        void ownGoalX;
       }
 
       this.steer(p, tx, ty, this.playerSpeed(p, p.side) * speedScale, dt);
     });
-  }
-
-  private shouldChase(p: Player, teamHasBall: boolean): boolean {
-    if (teamHasBall) return false;
-    return true;
   }
 
   private updateGK(p: Player, _dt: number): void {
@@ -732,27 +721,37 @@ export class MatchScene extends Phaser.Scene {
       }
     } else {
       // stick ball ahead of owner
-      const p = this.players[this.ball.ownerIdx];
+      const ownerIdx = this.ball.ownerIdx;
+      const p = this.players[ownerIdx];
       const fl = Math.hypot(p.faceX, p.faceY) || 1;
       this.ball.x = p.x + (p.faceX / fl) * (PR + BR - 2);
       this.ball.y = p.y + (p.faceY / fl) * (PR + BR - 2);
       this.ball.vx = 0;
       this.ball.vy = 0;
-      // an opponent can tackle: if an opponent gets very close, ball pops loose to them
-      this.players.forEach((o, i) => {
-        if (o.side === p.side) return;
-        if (dist(o.x, o.y, this.ball.x, this.ball.y) < PR + BR + 2) {
-          if (this.rng.bool(0.5)) {
-            this.ball.ownerIdx = i;
-          } else {
-            this.ball.ownerIdx = -1;
-            this.ball.vx = (this.ball.x - p.x) * 6;
-            this.ball.vy = (this.ball.y - p.y) * 6;
-            this.lastKickIdx = this.ball.ownerIdx;
-            this.kickCooldown = 0.12;
-          }
+      // Tackle: resolve ONCE against the single nearest opponent in range
+      // (avoids the previous mid-loop ownerIdx mutation / stale-owner bug).
+      let tackler = -1;
+      let td = Infinity;
+      for (let i = 0; i < this.players.length; i++) {
+        const o = this.players[i];
+        if (o.side === p.side) continue;
+        const d = dist(o.x, o.y, this.ball.x, this.ball.y);
+        if (d < PR + BR + 2 && d < td) {
+          td = d;
+          tackler = i;
         }
-      });
+      }
+      if (tackler >= 0) {
+        if (this.rng.bool(0.5)) {
+          this.ball.ownerIdx = tackler; // clean steal
+        } else {
+          this.ball.ownerIdx = -1; // pops loose
+          this.ball.vx = (this.ball.x - p.x) * 6;
+          this.ball.vy = (this.ball.y - p.y) * 6;
+          this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
+          this.kickCooldown = 0.12;
+        }
+      }
     }
 
     if (this.ball.ownerIdx >= 0) return;
@@ -860,7 +859,7 @@ export class MatchScene extends Phaser.Scene {
       this.dyn.fillTriangle(ap.x - 6, ap.y - PR - 12, ap.x + 6, ap.y - PR - 12, ap.x, ap.y - PR - 4);
       // charge bar
       if (this.charging) {
-        const charge = Math.min(1, (this.time.now - this.chargeStart) / 700);
+        const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
         this.dyn.fillStyle(C.deep, 0.8);
         this.dyn.fillRect(ap.x - 22, ap.y + PR + 8, 44, 7);
         this.dyn.fillStyle(charge > 0.8 ? C.surge : C.cyan, 1);
@@ -870,7 +869,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private showBanner(text: string, color: number, ms: number): void {
-    this.bannerText.setText(text).setColor('#' + color.toString(16).padStart(6, '0')).setAlpha(1).setScale(1);
+    this.bannerText.setText(text).setColor(hex(color)).setAlpha(1).setScale(1);
     this.tweens.killTweensOf(this.bannerText);
     this.tweens.add({ targets: this.bannerText, scale: 1.15, duration: 150, yoyo: true });
     this.tweens.add({ targets: this.bannerText, alpha: 0, delay: ms - 250, duration: 250 });

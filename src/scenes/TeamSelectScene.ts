@@ -30,6 +30,7 @@ export class TeamSelectScene extends Phaser.Scene {
   create(data: TeamSelectData): void {
     this.mode = data?.mode ?? 'tournament';
     this.selectedId = null;
+    this.startEnabled = false; // reset on every entry (scene instance is reused)
     this.cardObjs = {};
     this.cameras.main.setBackgroundColor(C.indigo);
 
@@ -116,7 +117,7 @@ export class TeamSelectScene extends Phaser.Scene {
     const primary = hexToNum(team.colors.primary);
     const confColor = hexToNum(CONFED_COLOR[team.confederation] ?? '#ffffff');
     const g = this.add.graphics();
-    const redraw = (sel: boolean) => {
+    const redraw = (sel: boolean, hover = false) => {
       g.clear();
       g.fillStyle(C.dark, 0.9);
       g.fillRoundedRect(x, y, w, h, 8);
@@ -125,7 +126,8 @@ export class TeamSelectScene extends Phaser.Scene {
       g.fillRoundedRect(x, y, 8, h, { tl: 8, bl: 8, tr: 0, br: 0 });
       g.fillStyle(primary, 0.16);
       g.fillRoundedRect(x, y, w, h, 8);
-      g.lineStyle(sel ? 3 : 1.2, sel ? C.gold : confColor, sel ? 1 : 0.6);
+      const stroke = sel ? C.gold : hover ? C.cyan : confColor;
+      g.lineStyle(sel ? 3 : hover ? 2 : 1.2, stroke, sel || hover ? 1 : 0.6);
       g.strokeRoundedRect(x, y, w, h, 8);
     };
     redraw(false);
@@ -148,8 +150,9 @@ export class TeamSelectScene extends Phaser.Scene {
 
     const zone = this.add.zone(x + w / 2, y + h / 2, w, h).setInteractive({ useHandCursor: true });
     zone.on('pointerover', () => {
-      if (this.selectedId !== team.id) g.setAlpha(1.0), redraw(false), g.lineStyle(2, C.cyan, 1);
+      if (this.selectedId !== team.id) redraw(false, true);
     });
+    zone.on('pointerout', () => redraw(this.selectedId === team.id));
     zone.on('pointerdown', () => this.select(team));
     this.cardObjs[team.id] = { redraw };
   }
