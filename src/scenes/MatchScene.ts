@@ -1141,10 +1141,14 @@ export class MatchScene extends Phaser.Scene {
       if (userWon) audio.play('win');
       this.scene.start('Result', {
         title: drew ? 'DRAW' : userWon ? 'WIN!' : 'DEFEAT',
-        subtitle: `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}`,
         lines: [`${displayName(this.home)} vs ${displayName(this.away)}`],
         accent: userWon ? C.lime : drew ? C.gold : C.surge,
         outcome: drew ? 'draw' : userWon ? 'win' : 'loss',
+        homeCode: this.home.code,
+        awayCode: this.away.code,
+        homeGoals: this.homeGoals,
+        awayGoals: this.awayGoals,
+        userIsHome: this.cfg.userTeamId === this.home.id,
         nextScene: 'Menu',
         buttonLabel: 'BACK TO MENU',
       });

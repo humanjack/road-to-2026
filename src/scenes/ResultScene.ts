@@ -18,6 +18,14 @@ export interface ResultData {
   outcome?: Outcome;
   nextScene: string;
   buttonLabel?: string;
+  // Optional scoreline — when present, the Result screen shows a large
+  // animated count-up + team-coloured stat lines instead of the plain
+  // subtitle scoreline. Absent for the tournament-champion screen.
+  homeCode?: string;
+  awayCode?: string;
+  homeGoals?: number;
+  awayGoals?: number;
+  userIsHome?: boolean;
 }
 
 export class ResultScene extends Phaser.Scene {
@@ -46,7 +54,11 @@ export class ResultScene extends Phaser.Scene {
     }
 
     this.add.text(cx, 230, data.title, { fontFamily: FONT_DISPLAY, fontSize: '64px', color: '#' + accent.toString(16).padStart(6, '0') }).setOrigin(0.5);
-    if (data.subtitle) {
+
+    const hasScore = data.homeGoals !== undefined && data.awayGoals !== undefined;
+    if (hasScore) {
+      this.drawScoreline(cx, data);
+    } else if (data.subtitle) {
       this.add.text(cx, 300, data.subtitle, { fontFamily: FONT_DISPLAY, fontSize: '28px', color: CSS.light }).setOrigin(0.5);
     }
     let y = 380;
@@ -100,6 +112,64 @@ export class ResultScene extends Phaser.Scene {
         });
       },
     });
+  }
+
+  // Big animated scoreline (counts up from 0-0) plus two team-coloured stat
+  // lines. Colour-independent: the user's side carries a "YOU" tag and a
+  // FILLED marker; the opponent gets an OUTLINE marker — so attribution never
+  // relies on hue alone (mirrors the pitch centre-dot discipline).
+  private drawScoreline(cx: number, data: ResultData): void {
+    const hg = data.homeGoals ?? 0;
+    const ag = data.awayGoals ?? 0;
+    const draw = data.outcome === 'draw';
+    const userIsHome = data.userIsHome ?? true;
+
+    const score = this.add
+      .text(cx, 300, '0 - 0', { fontFamily: FONT_DISPLAY, fontSize: '56px', color: CSS.gold })
+      .setOrigin(0.5)
+      .setDepth(2);
+    if (getSave().settings.reduceMotion) {
+      score.setText(`${hg} - ${ag}`);
+    } else {
+      const c = { h: 0, a: 0 };
+      this.tweens.add({
+        targets: c,
+        h: hg,
+        a: ag,
+        duration: 1100,
+        ease: 'Quad.easeOut',
+        onUpdate: () => score.setText(`${Math.round(c.h)} - ${Math.round(c.a)}`),
+        onComplete: () => score.setText(`${hg} - ${ag}`),
+      });
+    }
+
+    const homeTint = draw ? CSS.light : userIsHome ? CSS.surge : CSS.cyan;
+    const awayTint = draw ? CSS.light : userIsHome ? CSS.cyan : CSS.surge;
+    this.drawSideStat(cx - 150, 352, data.homeCode ?? 'HOME', hg, homeTint, !draw && userIsHome);
+    this.drawSideStat(cx + 150, 352, data.awayCode ?? 'AWAY', ag, awayTint, !draw && !userIsHome);
+  }
+
+  private drawSideStat(x: number, y: number, code: string, goals: number, color: string, isUser: boolean): void {
+    const colNum = Phaser.Display.Color.HexStringToColor(color).color;
+    const g = this.add.graphics().setDepth(2);
+    if (isUser) {
+      g.fillStyle(colNum, 1);
+      g.fillCircle(x - 48, y, 6);
+    } else {
+      g.lineStyle(2, colNum, 1);
+      g.strokeCircle(x - 48, y, 6);
+    }
+    this.add
+      .text(x - 34, y, `${code}  ${goals}`, { fontFamily: FONT_DISPLAY, fontSize: '24px', color })
+      .setOrigin(0, 0.5)
+      .setDepth(2);
+    if (isUser) {
+      this.add
+        .text(x - 34, y - 26, 'YOU', { fontFamily: FONT_BODY, fontSize: '12px', color: CSS.gold })
+        .setOrigin(0, 0.5)
+        .setDepth(2)
+        .setLetterSpacing(2);
+    }
   }
 
   // ~70 palette-coloured paper pieces cascading from the top edge, drifting and
