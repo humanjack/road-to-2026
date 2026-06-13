@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
+import { audio } from '../core/audio';
 
 export interface ResultData {
   title: string;
@@ -47,6 +48,10 @@ export class ResultScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     btn.on('pointerover', () => btn.setBackgroundColor(CSS.cyan));
     btn.on('pointerout', () => btn.setBackgroundColor(CSS.surge));
-    btn.on('pointerdown', () => this.scene.start(data.nextScene));
+    btn.on('pointerdown', () => {
+      audio.resume();
+      audio.play('ui');
+      this.scene.start(data.nextScene);
+    });
   }
 }

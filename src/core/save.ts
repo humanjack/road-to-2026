@@ -1,4 +1,4 @@
-import type { SaveGame, TournamentState, GameSettings, CareerStats } from '../data/types';
+import type { SaveGame, TournamentState, GameSettings, CareerStats, Cosmetics } from '../data/types';
 
 const STORAGE_KEY = 'groundswell26.save.v1';
 export const SAVE_VERSION = 1;
@@ -11,6 +11,10 @@ function defaultStats(): CareerStats {
   return { tournamentsPlayed: 0, tournamentsWon: 0, matchesPlayed: 0, goalsScored: 0 };
 }
 
+function defaultCosmetics(): Cosmetics {
+  return { ball: 'default', pitch: 'default' };
+}
+
 export function defaultSave(): SaveGame {
   return {
     version: SAVE_VERSION,
@@ -18,6 +22,8 @@ export function defaultSave(): SaveGame {
     coins: 0,
     settings: defaultSettings(),
     stats: defaultStats(),
+    unlocks: [],
+    cosmetics: defaultCosmetics(),
   };
 }
 
@@ -59,6 +65,8 @@ function migrate(raw: any): SaveGame {
     coins: typeof raw.coins === 'number' ? raw.coins : 0,
     settings: { ...base.settings, ...(raw.settings ?? {}) },
     stats: { ...base.stats, ...(raw.stats ?? {}) },
+    unlocks: Array.isArray(raw.unlocks) ? raw.unlocks.filter((x: any) => typeof x === 'string') : [],
+    cosmetics: { ...base.cosmetics, ...(raw.cosmetics ?? {}) },
   };
   return save;
 }
@@ -111,6 +119,33 @@ export function hasSavedTournament(): boolean {
 export function addCoins(n: number): void {
   const save = loadSave();
   save.coins = Math.max(0, save.coins + n);
+  writeSave(save);
+}
+
+// Spend coins atomically; returns false (and changes nothing) if too poor.
+export function spendCoins(n: number): boolean {
+  const save = loadSave();
+  if (save.coins < n) return false;
+  save.coins -= n;
+  writeSave(save);
+  return true;
+}
+
+export function isUnlocked(id: string): boolean {
+  return loadSave().unlocks.includes(id);
+}
+
+export function unlockItem(id: string): void {
+  const save = loadSave();
+  if (!save.unlocks.includes(id)) {
+    save.unlocks.push(id);
+    writeSave(save);
+  }
+}
+
+export function equipCosmetic(slot: keyof import('../data/types').Cosmetics, value: string): void {
+  const save = loadSave();
+  save.cosmetics = { ...save.cosmetics, [slot]: value };
   writeSave(save);
 }
 

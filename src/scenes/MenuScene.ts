@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
-import { hasSavedTournament, getSave } from '../core/save';
+import { hasSavedTournament, getSave, isUnlocked } from '../core/save';
+import { audio } from '../core/audio';
+import { TEAMS } from '../data/teams';
+import { WORLD_ELEVEN } from '../data/extras';
+import { RNG, randomSeed } from '../core/rng';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -66,6 +70,13 @@ export class MenuScene extends Phaser.Scene {
       y += 64;
     }
 
+    // top-right utility buttons
+    this.cornerButton(GAME_W - 90, 40, 'SETTINGS', () => this.scene.start('Settings'));
+    this.cornerButton(GAME_W - 230, 40, 'SHOP', () => this.scene.start('Shop'));
+    if (isUnlocked(WORLD_ELEVEN.id)) {
+      this.cornerButton(GAME_W - 370, 40, 'WORLD XI', () => this.launchWorldEleven());
+    }
+
     const save = getSave();
     this.add
       .text(GAME_W - 24, GAME_H - 20, `Coins ${save.coins}  ·  Cups ${save.stats.tournamentsWon}`, {
@@ -76,16 +87,58 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(1, 1);
 
     this.add
-      .text(24, GAME_H - 20, '48 nations · one surge · lift the sphere', {
+      .text(24, GAME_H - 36, '48 nations · one surge · lift the sphere', {
         fontFamily: FONT_BODY,
         fontSize: '16px',
         color: CSS.mid,
       })
       .setOrigin(0, 1);
+    this.add
+      .text(24, GAME_H - 16, 'Original game — not affiliated with FIFA or any official tournament.', {
+        fontFamily: FONT_BODY,
+        fontSize: '12px',
+        color: CSS.dark,
+      })
+      .setOrigin(0, 1)
+      .setColor(CSS.mid);
+  }
+
+  private cornerButton(cx: number, cy: number, label: string, onClick: () => void): void {
+    const w = 120;
+    const h = 36;
+    const g = this.add.graphics();
+    g.fillStyle(C.dark, 0.9);
+    g.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, 8);
+    g.lineStyle(1.5, C.mid, 0.6);
+    g.strokeRoundedRect(cx - w / 2, cy - h / 2, w, h, 8);
+    const t = this.add
+      .text(cx, cy, label, { fontFamily: FONT_DISPLAY, fontSize: '15px', color: CSS.light })
+      .setOrigin(0.5);
+    const z = this.add.zone(cx, cy, w, h).setInteractive({ useHandCursor: true });
+    z.on('pointerover', () => t.setColor(CSS.cyan));
+    z.on('pointerout', () => t.setColor(CSS.light));
+    z.on('pointerdown', () => {
+      audio.resume();
+      audio.play('ui');
+      onClick();
+    });
   }
 
   private startTeamSelect(mode: 'tournament' | 'quick' = 'tournament'): void {
     this.scene.start('TeamSelect', { mode });
+  }
+
+  // World Eleven mode: play the unlocked all-star squad vs a random nation.
+  private launchWorldEleven(): void {
+    const rng = new RNG(randomSeed());
+    const opp = rng.pick(TEAMS);
+    this.scene.start('Match', {
+      homeId: WORLD_ELEVEN.id,
+      awayId: opp.id,
+      userTeamId: WORLD_ELEVEN.id,
+      context: 'quick',
+      difficulty: 'pro',
+    });
   }
 
   private drawBackdrop(): void {
@@ -158,6 +211,8 @@ export class MenuScene extends Phaser.Scene {
       txt.setColor(CSS.white);
     });
     zone.on('pointerdown', () => {
+      audio.resume();
+      audio.play('ui');
       this.tweens.add({ targets: [txt], scale: 0.94, duration: 60, yoyo: true });
       this.time.delayedCall(70, onClick);
     });

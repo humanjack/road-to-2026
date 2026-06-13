@@ -108,6 +108,13 @@ export interface SaveGame {
   coins: number;
   settings: GameSettings;
   stats: CareerStats;
+  unlocks: string[]; // ids of purchased shop items (teams + cosmetics)
+  cosmetics: Cosmetics;
+}
+
+export interface Cosmetics {
+  ball: string; // 'default' | 'gold' | 'plasma'
+  pitch: string; // 'default' | 'aurora'
 }
 
 export interface GameSettings {

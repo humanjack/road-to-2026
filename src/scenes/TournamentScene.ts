@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { TEAMS } from '../data/teams';
+import { displayName } from '../data/names';
 import type { TournamentState, MatchResult } from '../data/types';
 import { getSave, saveTournament, recordTournament, addCoins } from '../core/save';
 import { RNG, randomSeed } from '../core/rng';
@@ -23,6 +24,7 @@ import {
   autoSimAll,
 } from '../core/flow';
 import { simulateMatch } from '../core/simMatch';
+import { audio } from '../core/audio';
 
 const map = teamMapOf(TEAMS);
 
@@ -171,10 +173,10 @@ export class TournamentScene extends Phaser.Scene {
     }
     this.scene.start('Result', {
       title: userWon ? 'CHAMPIONS!' : 'CUP COMPLETE',
-      subtitle: champ ? `${champ.name} lift the Aurora Sphere` : 'The Globe Cup is decided',
+      subtitle: champ ? `${displayName(champ)} lift the Aurora Sphere` : 'The Globe Cup is decided',
       lines: userWon
         ? ['You have won The Globe Cup!', '+500 coins']
-        : [`Winner: ${champ?.name ?? '—'}`, userStillIn(this.state) ? '' : 'You were knocked out earlier', '+120 coins'].filter(Boolean),
+        : [`Winner: ${champ ? displayName(champ) : '—'}`, userStillIn(this.state) ? '' : 'You were knocked out earlier', '+120 coins'].filter(Boolean),
       accent: userWon ? C.gold : C.cyan,
       nextScene: 'Menu',
       buttonLabel: 'BACK TO MENU',
@@ -189,7 +191,7 @@ export class TournamentScene extends Phaser.Scene {
       .text(GAME_W / 2, 40, 'THE GLOBE CUP', { fontFamily: FONT_DISPLAY, fontSize: '36px', color: CSS.gold })
       .setOrigin(0.5);
     this.add
-      .text(GAME_W / 2, 74, `Your nation: ${user.name} (${user.code})  ·  Difficulty: ${this.state.difficulty.toUpperCase()}`, {
+      .text(GAME_W / 2, 74, `Your nation: ${displayName(user)} (${user.code})  ·  Difficulty: ${this.state.difficulty.toUpperCase()}`, {
         fontFamily: FONT_BODY,
         fontSize: '16px',
         color: CSS.mid,
@@ -263,7 +265,7 @@ export class TournamentScene extends Phaser.Scene {
           color: isUser ? CSS.gold : CSS.light,
         });
         this.add
-          .text(x + 96, ry + 1, team.name, { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.mid })
+          .text(x + 96, ry + 1, displayName(team), { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.mid })
           .setFixedSize(120, 14);
         this.add
           .text(x + cellW - 12, ry, String(rowS.Pts), {
@@ -390,6 +392,8 @@ export class TournamentScene extends Phaser.Scene {
     z.on('pointerover', () => t.setColor(CSS.gold));
     z.on('pointerout', () => t.setColor(CSS.white));
     z.on('pointerdown', () => {
+      audio.resume();
+      audio.play('ui');
       this.tweens.add({ targets: t, scale: 0.94, duration: 60, yoyo: true });
       this.time.delayedCall(70, onClick);
     });

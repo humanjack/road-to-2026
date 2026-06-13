@@ -1,10 +1,12 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
-import { TEAMS } from '../data/teams';
+import { displayName } from '../data/names';
+import { resolveTeam, ballColor } from '../data/extras';
 import type { Team, MatchResult, Difficulty } from '../data/types';
-import { recordMatch } from '../core/save';
+import { recordMatch, getSave } from '../core/save';
 import { penaltyShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
+import { audio } from '../core/audio';
 
 export interface MatchInit {
   homeId: string;
@@ -100,8 +102,8 @@ export class MatchScene extends Phaser.Scene {
   create(init: MatchInit): void {
     this.cfg = init;
     this.finished = false;
-    this.home = TEAMS.find((t) => t.id === init.homeId)!;
-    this.away = TEAMS.find((t) => t.id === init.awayId)!;
+    this.home = resolveTeam(init.homeId)!;
+    this.away = resolveTeam(init.awayId)!;
     this.duration = init.durationSec ?? 120;
     this.rng = new RNG(randomSeed());
     this.diff = DIFF[init.difficulty ?? ('pro' as Difficulty)] ?? DIFF.pro;
@@ -123,7 +125,8 @@ export class MatchScene extends Phaser.Scene {
     this.buildHud();
     this.spawnPlayers();
     this.dyn = this.add.graphics().setDepth(20);
-    this.ballGfx = this.add.circle(0, 0, BR, 0xffffff).setDepth(15).setStrokeStyle(2, 0x1a1240, 1);
+    const cos = getSave().cosmetics;
+    this.ballGfx = this.add.circle(0, 0, BR, ballColor(cos.ball)).setDepth(15).setStrokeStyle(2, 0x1a1240, 1);
     this.bannerText = this.add
       .text(GAME_W / 2, GAME_H / 2, '', { fontFamily: FONT_DISPLAY, fontSize: '72px', color: CSS.white })
       .setOrigin(0.5)
@@ -134,19 +137,33 @@ export class MatchScene extends Phaser.Scene {
     this.showBanner('KICK OFF', C.cyan, 1000);
     this.state = 'kickoff';
     this.stateTimer = 1.0;
+
+    audio.resume();
+    audio.syncSettings();
+    audio.startMusic(0.3);
+    audio.play('whistle');
   }
 
   // --- setup -------------------------------------------------------------
 
   private drawPitch(): void {
+    const aurora = getSave().cosmetics.pitch === 'aurora';
     const g = this.add.graphics().setDepth(0);
     g.fillStyle(C.indigo, 1);
     g.fillRect(0, 0, GAME_W, GAME_H);
-    // turf stripes
+    // turf stripes (aurora cosmetic re-tints the grass cool/violet)
+    const stripeA = aurora ? 0x1b2a4a : 0x16331f;
+    const stripeB = aurora ? 0x16223d : 0x12281a;
     const stripes = 10;
     for (let i = 0; i < stripes; i++) {
-      g.fillStyle(i % 2 === 0 ? 0x16331f : 0x12281a, 1);
+      g.fillStyle(i % 2 === 0 ? stripeA : stripeB, 1);
       g.fillRect(this.px + (this.pw / stripes) * i, this.py, this.pw / stripes, this.ph);
+    }
+    if (aurora) {
+      g.fillStyle(0x7b5cff, 0.12);
+      g.fillRect(this.px, this.py, this.pw, this.ph * 0.4);
+      g.fillStyle(0x19d3f0, 0.08);
+      g.fillRect(this.px, this.py, this.pw, this.ph * 0.22);
     }
     g.lineStyle(3, 0xffffff, 0.5);
     g.strokeRect(this.px, this.py, this.pw, this.ph);
@@ -368,6 +385,10 @@ export class MatchScene extends Phaser.Scene {
     this.renderEntities();
     this.updateHud();
 
+    // music tension tracks the bigger Surge meter + how late the match is
+    const tension = Math.max(this.surgeHome, this.surgeAway) / 100;
+    audio.setIntensity(0.25 + tension * 0.5 + (this.elapsed / this.duration) * 0.2);
+
     if (this.elapsed >= this.duration) this.onFullTime();
   }
 
@@ -518,6 +539,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.y = from.y + (vy / len) * (PR + BR + 2);
     this.lastKickIdx = this.players.indexOf(from);
     this.kickCooldown = 0.18;
+    audio.play('kick');
   }
 
   private lastKickIdx = -1;
@@ -811,6 +833,7 @@ export class MatchScene extends Phaser.Scene {
     this.stateTimer = 1.6;
     // burst of particles
     this.goalBurst(col);
+    audio.play('goal');
   }
 
   private goalBurst(color: number): void {
@@ -900,6 +923,7 @@ export class MatchScene extends Phaser.Scene {
     this.surgeTagged[side] = true;
     const col = side === 'home' ? this.homeColor : this.awayColor;
     this.showBanner('GROUNDSWELL!', col, 900);
+    audio.play('surge');
     this.time.delayedCall(2600, () => {
       if (side === 'home') this.surgeHome = 0;
       else this.surgeAway = 0;
@@ -913,6 +937,7 @@ export class MatchScene extends Phaser.Scene {
     if (this.state === 'fulltime' || this.state === 'pens') return;
     this.state = 'fulltime';
     this.showBanner('FULL TIME', C.gold, 1600);
+    audio.play('whistle');
     const knockout = this.cfg.context === 'knockout';
     if (knockout && this.homeGoals === this.awayGoals) {
       this.state = 'pens';
@@ -934,6 +959,7 @@ export class MatchScene extends Phaser.Scene {
   private finishMatch(): void {
     if (this.finished) return;
     this.finished = true;
+    audio.stopMusic();
     const knockout = this.cfg.context === 'knockout';
     let winnerId: string | undefined;
     if (this.homeGoals > this.awayGoals) winnerId = this.home.id;
@@ -960,10 +986,11 @@ export class MatchScene extends Phaser.Scene {
     if (this.cfg.context === 'quick') {
       const userWon = winnerId === this.cfg.userTeamId;
       const drew = !winnerId;
+      if (userWon) audio.play('win');
       this.scene.start('Result', {
         title: drew ? 'DRAW' : userWon ? 'WIN!' : 'DEFEAT',
         subtitle: `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}`,
-        lines: [`${this.home.name} vs ${this.away.name}`],
+        lines: [`${displayName(this.home)} vs ${displayName(this.away)}`],
         accent: userWon ? C.lime : drew ? C.gold : C.surge,
         nextScene: 'Menu',
         buttonLabel: 'BACK TO MENU',
@@ -974,6 +1001,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private abandon(): void {
+    audio.stopMusic();
     if (this.cfg.context === 'quick') {
       this.scene.start('Menu');
     } else {

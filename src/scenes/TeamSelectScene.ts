@@ -1,10 +1,12 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, CONFED_COLOR } from '../ui/theme';
 import { TEAMS } from '../data/teams';
+import { displayName } from '../data/names';
 import type { Team, Difficulty } from '../data/types';
 import { createTournament } from '../core/tournament';
 import { saveTournament } from '../core/save';
 import { randomSeed, RNG } from '../core/rng';
+import { audio } from '../core/audio';
 
 interface TeamSelectData {
   mode: 'tournament' | 'quick';
@@ -134,7 +136,7 @@ export class TeamSelectScene extends Phaser.Scene {
 
     this.add.text(x + 16, y + 12, team.code, { fontFamily: FONT_DISPLAY, fontSize: '22px', color: CSS.white });
     this.add
-      .text(x + 16, y + 40, team.name, { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.light })
+      .text(x + 16, y + 40, displayName(team), { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.light })
       .setFixedSize(w - 24, 16);
     this.add
       .text(x + w - 12, y + 12, String(team.ovr), { fontFamily: FONT_DISPLAY, fontSize: '20px', color: CSS.gold })
@@ -158,13 +160,15 @@ export class TeamSelectScene extends Phaser.Scene {
   }
 
   private select(team: Team): void {
+    audio.resume();
+    audio.play('ui');
     const prev = this.selectedId;
     this.selectedId = team.id;
     if (prev && this.cardObjs[prev]) this.cardObjs[prev].redraw(false);
     this.cardObjs[team.id].redraw(true);
     this.startEnabled = true;
     this.summaryText.setText(
-      `${team.name.toUpperCase()}  ·  OVR ${team.ovr}  ·  ${team.formation}  ·  ${team.playStyle}\n` +
+      `${displayName(team).toUpperCase()}  ·  OVR ${team.ovr}  ·  ${team.formation}  ·  ${team.playStyle}\n` +
         `Star: ${team.star.name} (${team.star.position}) — ${team.star.archetype}`,
     );
     this.refreshStart();
