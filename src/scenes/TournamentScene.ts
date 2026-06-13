@@ -156,6 +156,7 @@ export class TournamentScene extends Phaser.Scene {
       matchId,
       returnScene: 'Tournament',
       durationSec: 120,
+      roundLabel: context === 'knockout' && this.state.knockoutRound ? roundLabel(this.state.knockoutRound) : undefined,
     });
   }
 
