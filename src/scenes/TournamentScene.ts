@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { TEAMS } from '../data/teams';
 import { displayName } from '../data/names';
-import type { TournamentState, MatchResult } from '../data/types';
+import type { TournamentState, MatchResult, KnockoutRound, BracketMatch } from '../data/types';
 import { getSave, saveTournament, recordTournament, addCoins } from '../core/save';
 import { RNG, randomSeed } from '../core/rng';
 import {
@@ -281,71 +281,97 @@ export class TournamentScene extends Phaser.Scene {
   }
 
   private renderKnockout(): void {
-    const round = this.state.knockoutRound!;
+    const KO: KnockoutRound[] = ['R32', 'R16', 'QF', 'SF', 'F'];
+    const SHORT: Record<KnockoutRound, string> = { R32: 'R32', R16: 'R16', QF: 'QF', SF: 'SF', F: 'FINAL' };
+    const cur = this.state.knockoutRound!;
     this.add
-      .text(GAME_W / 2, 108, roundLabel(round).toUpperCase(), {
-        fontFamily: FONT_DISPLAY,
-        fontSize: '22px',
-        color: CSS.cyan,
-      })
+      .text(GAME_W / 2, 104, roundLabel(cur).toUpperCase(), { fontFamily: FONT_DISPLAY, fontSize: '20px', color: CSS.cyan })
       .setOrigin(0.5);
 
-    const matches = roundMatches(this.state, round).filter((m) => m.homeId && m.awayId);
-    const cols = matches.length > 8 ? 2 : 1;
-    const perCol = Math.ceil(matches.length / cols);
-    const rowH = 44;
-    const colW = 460;
-    const startY = 150;
-    const totalW = cols * colW + (cols - 1) * 40;
-    const startX = (GAME_W - totalW) / 2;
+    // Left-to-right bracket: one column per round, cards positioned at the
+    // bracket midpoints so winners visibly funnel toward the Final.
+    const marginX = 24;
+    const gap = 56;
+    const cols = KO.length;
+    const colW = (GAME_W - marginX * 2 - gap * (cols - 1)) / cols;
+    const top = 150;
+    const bottom = 636;
+    const H = bottom - top;
 
-    matches.forEach((m, i) => {
-      const col = Math.floor(i / perCol);
-      const row = i % perCol;
-      const x = startX + col * (colW + 40);
-      const y = startY + row * (rowH + 6);
-      const isUser = m.homeId === this.state.userTeamId || m.awayId === this.state.userTeamId;
-      const h = map[m.homeId!];
-      const a = map[m.awayId!];
-
-      const g = this.add.graphics();
-      g.fillStyle(isUser ? C.dark : C.deep, 0.9);
-      g.fillRoundedRect(x, y, colW, rowH, 8);
-      g.lineStyle(isUser ? 2.5 : 1, isUser ? C.gold : C.dark, 1);
-      g.strokeRoundedRect(x, y, colW, rowH, 8);
-
-      const res = m.result;
-      const homeWin = res?.winnerId === m.homeId;
-      const awayWin = res?.winnerId === m.awayId;
-      this.add.text(x + 14, y + 12, h.code, {
-        fontFamily: FONT_DISPLAY,
-        fontSize: '18px',
-        color: homeWin ? CSS.lime : res ? CSS.mid : CSS.light,
+    // card centres per round (drives the connector elbows)
+    const centres: { x: number; y: number }[][] = [];
+    KO.forEach((round, ri) => {
+      const matches = roundMatches(this.state, round);
+      const count = matches.length || 1;
+      const colX = marginX + ri * (colW + gap);
+      const cardH = Math.min(30, H / count - 4);
+      this.add
+        .text(colX + colW / 2, top - 18, SHORT[round], { fontFamily: FONT_BODY, fontSize: '12px', color: CSS.mid })
+        .setOrigin(0.5)
+        .setLetterSpacing(2);
+      const rowCentres: { x: number; y: number }[] = [];
+      matches.forEach((m, j) => {
+        const cy = top + (j + 0.5) * (H / count);
+        rowCentres.push({ x: colX, y: cy });
+        this.drawBracketCard(colX, cy, colW, cardH, m, round === cur);
       });
-      this.add
-        .text(x + colW - 14, y + 12, a.code, {
-          fontFamily: FONT_DISPLAY,
-          fontSize: '18px',
-          color: awayWin ? CSS.lime : res ? CSS.mid : CSS.light,
-        })
-        .setOrigin(1, 0);
-      const mid = res
-        ? `${res.homeGoals} - ${res.awayGoals}${res.penalties ? ` (${res.penalties.home}-${res.penalties.away}p)` : ''}`
-        : 'vs';
-      this.add
-        .text(x + colW / 2, y + 12, mid, { fontFamily: FONT_DISPLAY, fontSize: '16px', color: CSS.gold })
-        .setOrigin(0.5, 0);
+      centres.push(rowCentres);
     });
+
+    // connectors: card j feeds card floor(j/2) in the next round
+    for (let ri = 0; ri < cols - 1; ri++) {
+      const g = this.add.graphics();
+      g.lineStyle(1.5, C.dark, 1);
+      centres[ri].forEach((c, j) => {
+        const target = centres[ri + 1][Math.floor(j / 2)];
+        if (!target) return;
+        const x1 = c.x + colW;
+        const x2 = target.x;
+        const midX = (x1 + x2) / 2;
+        g.beginPath();
+        g.moveTo(x1, c.y);
+        g.lineTo(midX, c.y);
+        g.lineTo(midX, target.y);
+        g.lineTo(x2, target.y);
+        g.strokePath();
+      });
+    }
 
     if (!userStillIn(this.state)) {
       this.add
-        .text(GAME_W / 2, GAME_H - 150, 'You have been eliminated — sim on to crown the champion.', {
+        .text(GAME_W / 2, GAME_H - 96, 'You have been eliminated — sim on to crown the champion.', {
           fontFamily: FONT_BODY,
-          fontSize: '16px',
+          fontSize: '15px',
           color: CSS.surge,
         })
         .setOrigin(0.5);
     }
+  }
+
+  private drawBracketCard(x: number, cy: number, w: number, h: number, m: BracketMatch, isCurrent: boolean): void {
+    const isUser = m.homeId === this.state.userTeamId || m.awayId === this.state.userTeamId;
+    const g = this.add.graphics();
+    g.fillStyle(isUser ? C.dark : C.deep, isCurrent || isUser ? 0.95 : 0.7);
+    g.fillRoundedRect(x, cy - h / 2, w, h, 5);
+    g.lineStyle(isUser ? 2 : 1, isUser ? C.gold : isCurrent ? C.cyan : C.dark, 1);
+    g.strokeRoundedRect(x, cy - h / 2, w, h, 5);
+
+    const res = m.result;
+    const homeWin = res?.winnerId === m.homeId;
+    const awayWin = res?.winnerId === m.awayId;
+    const hCode = m.homeId ? map[m.homeId].code : '—';
+    const aCode = m.awayId ? map[m.awayId].code : '—';
+    const fs = h >= 26 ? '13px' : '11px';
+    this.add
+      .text(x + 8, cy, hCode, { fontFamily: FONT_DISPLAY, fontSize: fs, color: homeWin ? CSS.lime : res ? CSS.mid : CSS.light })
+      .setOrigin(0, 0.5);
+    this.add
+      .text(x + w - 8, cy, aCode, { fontFamily: FONT_DISPLAY, fontSize: fs, color: awayWin ? CSS.lime : res ? CSS.mid : CSS.light })
+      .setOrigin(1, 0.5);
+    const mid = res ? `${res.homeGoals}-${res.awayGoals}${res.penalties ? 'p' : ''}` : 'v';
+    this.add
+      .text(x + w / 2, cy, mid, { fontFamily: FONT_BODY, fontSize: '11px', color: res ? CSS.gold : CSS.mid })
+      .setOrigin(0.5);
   }
 
   private renderActionBar(): void {
