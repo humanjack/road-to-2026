@@ -4,7 +4,7 @@ import { TEAMS } from '../data/teams';
 import { displayName } from '../data/names';
 import type { Team, Difficulty } from '../data/types';
 import { createTournament } from '../core/tournament';
-import { saveTournament } from '../core/save';
+import { getSave, saveTournament } from '../core/save';
 import { randomSeed, RNG } from '../core/rng';
 import { audio } from '../core/audio';
 import { transitionTo, fadeInScene } from '../ui/transitions';
@@ -120,45 +120,81 @@ export class TeamSelectScene extends Phaser.Scene {
   private makeCard(team: Team, x: number, y: number, w: number, h: number): void {
     const primary = hexToNum(team.colors.primary);
     const confColor = hexToNum(CONFED_COLOR[team.confederation] ?? '#ffffff');
+    const reduced = getSave().settings.reduceMotion;
+    // Build the whole card in a container centred on the cell so a hover lift
+    // (scale) and glow halo behave as one unit and can pop above neighbours.
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const lx = -w / 2;
+    const ly = -h / 2;
+    const card = this.add.container(cx, cy).setDepth(1);
+
+    const glow = this.add.graphics();
     const g = this.add.graphics();
-    const redraw = (sel: boolean, hover = false) => {
+
+    const drawGlow = (on: boolean) => {
+      glow.clear();
+      if (!on) return;
+      glow.lineStyle(7, confColor, 0.16);
+      glow.strokeRoundedRect(lx - 3, ly - 3, w + 6, h + 6, 11);
+      glow.lineStyle(3, confColor, 0.4);
+      glow.strokeRoundedRect(lx - 1, ly - 1, w + 2, h + 2, 9);
+    };
+    const redraw = (sel: boolean, hover: boolean) => {
       g.clear();
       g.fillStyle(C.dark, 0.9);
-      g.fillRoundedRect(x, y, w, h, 8);
-      // kit color stripe
-      g.fillStyle(primary, 0.92);
-      g.fillRoundedRect(x, y, 8, h, { tl: 8, bl: 8, tr: 0, br: 0 });
+      g.fillRoundedRect(lx, ly, w, h, 8);
+      // confederation-coloured left border — groups the 48 nations by region
+      g.fillStyle(confColor, 0.95);
+      g.fillRoundedRect(lx, ly, 6, h, { tl: 8, bl: 8, tr: 0, br: 0 });
+      // faint kit-colour wash
       g.fillStyle(primary, 0.16);
-      g.fillRoundedRect(x, y, w, h, 8);
-      const stroke = sel ? C.gold : hover ? C.cyan : confColor;
-      g.lineStyle(sel ? 3 : hover ? 2 : 1.2, stroke, sel || hover ? 1 : 0.6);
-      g.strokeRoundedRect(x, y, w, h, 8);
+      g.fillRoundedRect(lx, ly, w, h, 8);
+      const stroke = sel ? C.gold : confColor;
+      g.lineStyle(sel ? 3 : hover ? 2.5 : 1.2, stroke, sel || hover ? 1 : 0.5);
+      g.strokeRoundedRect(lx, ly, w, h, 8);
     };
-    redraw(false);
 
-    this.add.text(x + 16, y + 12, team.code, { fontFamily: FONT_DISPLAY, fontSize: '22px', color: CSS.white });
-    this.add
-      .text(x + 16, y + 40, displayName(team), { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.light })
+    const code = this.add.text(lx + 16, ly + 12, team.code, { fontFamily: FONT_DISPLAY, fontSize: '22px', color: CSS.white });
+    const name = this.add
+      .text(lx + 16, ly + 40, displayName(team), { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.light })
       .setFixedSize(w - 24, 16);
-    this.add
-      .text(x + w - 12, y + 12, String(team.ovr), { fontFamily: FONT_DISPLAY, fontSize: '20px', color: CSS.gold })
+    const ovr = this.add
+      .text(lx + w - 12, ly + 12, String(team.ovr), { fontFamily: FONT_DISPLAY, fontSize: '20px', color: CSS.gold })
       .setOrigin(1, 0);
-    this.add
-      .text(x + 16, y + 58, '★'.repeat(team.tier), { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.gold })
+    const stars = this.add
+      .text(lx + 16, ly + 58, '★'.repeat(team.tier), { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.gold })
       .setOrigin(0, 0.5);
+    card.add([glow, g, code, name, ovr, stars]);
     if (team.isHost) {
-      this.add
-        .text(x + w - 12, y + h - 14, 'HOST', { fontFamily: FONT_DISPLAY, fontSize: '11px', color: CSS.cyan })
+      const host = this.add
+        .text(lx + w - 12, ly + h - 14, 'HOST', { fontFamily: FONT_DISPLAY, fontSize: '11px', color: CSS.cyan })
         .setOrigin(1, 0.5);
+      card.add(host);
     }
 
-    const zone = this.add.zone(x + w / 2, y + h / 2, w, h).setInteractive({ useHandCursor: true });
+    // apply full visual state (border, glow, depth, lift) for a given mode
+    const apply = (sel: boolean, hover: boolean) => {
+      redraw(sel, hover);
+      drawGlow(sel || hover);
+      card.setDepth(hover ? 10 : sel ? 5 : 1);
+      const scale = hover ? 1.06 : sel ? 1.03 : 1;
+      if (reduced) {
+        card.setScale(scale);
+      } else {
+        this.tweens.killTweensOf(card);
+        this.tweens.add({ targets: card, scale, duration: 110, ease: 'Quad.easeOut' });
+      }
+    };
+    apply(false, false);
+
+    const zone = this.add.zone(cx, cy, w, h).setInteractive({ useHandCursor: true });
     zone.on('pointerover', () => {
-      if (this.selectedId !== team.id) redraw(false, true);
+      if (this.selectedId !== team.id) apply(false, true);
     });
-    zone.on('pointerout', () => redraw(this.selectedId === team.id));
+    zone.on('pointerout', () => apply(this.selectedId === team.id, false));
     zone.on('pointerdown', () => this.select(team));
-    this.cardObjs[team.id] = { redraw };
+    this.cardObjs[team.id] = { redraw: (sel: boolean) => apply(sel, false) };
   }
 
   private select(team: Team): void {
