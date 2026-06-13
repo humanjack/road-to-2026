@@ -115,6 +115,8 @@ export class MatchScene extends Phaser.Scene {
   private hudHome!: Phaser.GameObjects.Text;
   private hudAway!: Phaser.GameObjects.Text;
   private surgeBar!: Phaser.GameObjects.Graphics;
+  private homeGrad: number[] = [];
+  private awayGrad: number[] = [];
   private bannerText!: Phaser.GameObjects.Text;
   private ballGfx!: Phaser.GameObjects.Arc;
   private trailGfx!: Phaser.GameObjects.Graphics;
@@ -142,6 +144,8 @@ export class MatchScene extends Phaser.Scene {
     if (colorClash(this.homeColor, ac)) ac = Phaser.Display.Color.HexStringToColor(this.away.colors.secondary).color;
     if (colorClash(this.homeColor, ac)) ac = Phaser.Display.Color.HexStringToColor(this.away.colors.accent).color;
     this.awayColor = ac;
+    this.homeGrad = this.surgeGradient(this.homeColor, 6);
+    this.awayGrad = this.surgeGradient(this.awayColor, 6);
 
     this.homeGoals = 0;
     this.awayGoals = 0;
@@ -1206,17 +1210,7 @@ export class MatchScene extends Phaser.Scene {
     }
     const minute = Math.floor((this.elapsed / this.duration) * 90);
     this.hudClock.setText(`${minute}'`);
-    // surge bar (two-sided)
-    this.surgeBar.clear();
-    const w = 460;
-    const x0 = GAME_W / 2 - w / 2;
-    const y = 80;
-    this.surgeBar.fillStyle(C.deep, 0.8);
-    this.surgeBar.fillRoundedRect(x0, y, w, 8, 4);
-    this.surgeBar.fillStyle(this.homeColor, 1);
-    this.surgeBar.fillRect(GAME_W / 2 - (this.surgeHome / 100) * (w / 2), y + 1, (this.surgeHome / 100) * (w / 2), 6);
-    this.surgeBar.fillStyle(this.awayColor, 1);
-    this.surgeBar.fillRect(GAME_W / 2, y + 1, (this.surgeAway / 100) * (w / 2), 6);
+    this.drawSurgeBar();
     if (this.surgeHome >= 100) this.tagSurge('home');
     if (this.surgeAway >= 100) this.tagSurge('away');
 
@@ -1234,12 +1228,87 @@ export class MatchScene extends Phaser.Scene {
     this.puHud.setText(parts.join('   ·   '));
   }
 
+  // Two-sided Surge meter with a dark->bright gradient fill (precomputed
+  // stripes), a glow halo past 60, and a white shimmer sweep — so it reads as
+  // building comeback energy, not a flat gauge.
+  private drawSurgeBar(): void {
+    const w = 460;
+    const x0 = GAME_W / 2 - w / 2;
+    const cx = GAME_W / 2;
+    const y = 80;
+    const half = w / 2;
+    const n = this.homeGrad.length;
+    this.surgeBar.clear();
+    this.surgeBar.fillStyle(C.deep, 0.8);
+    this.surgeBar.fillRoundedRect(x0, y, w, 8, 4);
+
+    const hw = (this.surgeHome / 100) * half;
+    const aw = (this.surgeAway / 100) * half;
+    for (let i = 0; i < n; i++) {
+      this.surgeBar.fillStyle(this.homeGrad[i], 1);
+      this.surgeBar.fillRect(cx - (hw * (i + 1)) / n, y + 1, hw / n + 0.5, 6);
+      this.surgeBar.fillStyle(this.awayGrad[i], 1);
+      this.surgeBar.fillRect(cx + (aw * i) / n, y + 1, aw / n + 0.5, 6);
+    }
+
+    // glow halo once a side crosses 60
+    if (this.surgeHome > 60) {
+      this.surgeBar.lineStyle(2, this.homeColor, 0.3 + 0.3 * this.pulse);
+      this.surgeBar.strokeRoundedRect(cx - hw - 2, y - 2, hw + 2, 12, 4);
+    }
+    if (this.surgeAway > 60) {
+      this.surgeBar.lineStyle(2, this.awayColor, 0.3 + 0.3 * this.pulse);
+      this.surgeBar.strokeRoundedRect(cx, y - 2, aw + 2, 12, 4);
+    }
+
+    // white shimmer sweeping across the filled bar
+    if (!this.reduceMotion) {
+      const sweep = (this.time.now * 0.12) % w;
+      const sx = x0 + sweep;
+      const inHome = sx < cx && sx > cx - hw;
+      const inAway = sx > cx && sx < cx + aw;
+      if (inHome || inAway) {
+        this.surgeBar.fillStyle(0xffffff, 0.5);
+        this.surgeBar.fillRect(sx, y + 1, 3, 6);
+      }
+    }
+  }
+
+  // Per-side dim->bright colour ramp (centre dim, tip bright) — precomputed once
+  // when team colours are known, not per frame.
+  private surgeGradient(base: number, n: number): number[] {
+    const r0 = (base >> 16) & 255;
+    const g0 = (base >> 8) & 255;
+    const b0 = base & 255;
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const dim = 0.55 + 0.45 * t;
+      const lift = 0.25 * t;
+      const r = Math.min(255, Math.round(r0 * dim + 255 * lift));
+      const g = Math.min(255, Math.round(g0 * dim + 255 * lift));
+      const b = Math.min(255, Math.round(b0 * dim + 255 * lift));
+      out.push((r << 16) | (g << 8) | b);
+    }
+    return out;
+  }
+
   private surgeTagged: Record<Side, boolean> = { home: false, away: false };
   private tagSurge(side: Side): void {
     if (this.surgeTagged[side]) return;
     this.surgeTagged[side] = true;
     const col = side === 'home' ? this.homeColor : this.awayColor;
     this.showBanner('GROUNDSWELL!', col, 900);
+    // bright flash across the surging side's bar
+    if (!this.reduceMotion) {
+      const w = 460;
+      const cx = GAME_W / 2;
+      const flash =
+        side === 'home'
+          ? this.add.rectangle(cx - w / 4, 84, w / 2, 10, 0xffffff, 0.9).setDepth(32)
+          : this.add.rectangle(cx + w / 4, 84, w / 2, 10, 0xffffff, 0.9).setDepth(32);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 220, onComplete: () => flash.destroy() });
+    }
     audio.play('surge');
     this.time.delayedCall(2600, () => {
       if (side === 'home') this.surgeHome = 0;
