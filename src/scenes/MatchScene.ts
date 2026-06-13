@@ -1144,6 +1144,7 @@ export class MatchScene extends Phaser.Scene {
         subtitle: `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}`,
         lines: [`${displayName(this.home)} vs ${displayName(this.away)}`],
         accent: userWon ? C.lime : drew ? C.gold : C.surge,
+        outcome: drew ? 'draw' : userWon ? 'win' : 'loss',
         nextScene: 'Menu',
         buttonLabel: 'BACK TO MENU',
       });

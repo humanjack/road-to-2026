@@ -2,11 +2,18 @@ import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { audio } from '../core/audio';
 
+// Explicit, typed match outcome — the single source of truth for celebration
+// tiers (trophy size, confetti, count-up tint). Never infer this from `accent`:
+// a quick-match DRAW and a tournament WIN both use gold, so colour-sniffing
+// would fire a celebration on a draw.
+export type Outcome = 'win' | 'draw' | 'loss';
+
 export interface ResultData {
   title: string;
   subtitle?: string;
   lines?: string[];
   accent?: number;
+  outcome?: Outcome;
   nextScene: string;
   buttonLabel?: string;
 }
