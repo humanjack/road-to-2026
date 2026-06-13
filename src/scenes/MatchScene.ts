@@ -148,6 +148,8 @@ export class MatchScene extends Phaser.Scene {
     this.shots = { home: 0, away: 0 };
     this.onTarget = { home: 0, away: 0 };
     this.possSec = { home: 0, away: 0 };
+    this.prevHudHome = 0;
+    this.prevHudAway = 0;
     this.elapsed = 0;
     this.players = [];
     this.powerups = [];
@@ -226,15 +228,21 @@ export class MatchScene extends Phaser.Scene {
     g.fillStyle(C.deep, 0.92);
     g.fillRoundedRect(GAME_W / 2 - 230, 18, 460, 56, 12);
     this.hudHome = this.add
-      .text(GAME_W / 2 - 150, 46, this.home.code, { fontFamily: FONT_DISPLAY, fontSize: '26px', color: CSS.white })
+      .text(GAME_W / 2 - 150, 42, this.home.code, { fontFamily: FONT_DISPLAY, fontSize: '26px', color: CSS.white })
       .setOrigin(0.5)
       .setDepth(31);
     this.hudAway = this.add
-      .text(GAME_W / 2 + 150, 46, this.away.code, { fontFamily: FONT_DISPLAY, fontSize: '26px', color: CSS.white })
+      .text(GAME_W / 2 + 150, 42, this.away.code, { fontFamily: FONT_DISPLAY, fontSize: '26px', color: CSS.white })
       .setOrigin(0.5)
       .setDepth(31);
+    // team-colour underlines beneath each code (which side just scored, at a glance)
+    const ul = this.add.graphics().setDepth(31);
+    ul.fillStyle(this.homeColor, 1);
+    ul.fillRoundedRect(GAME_W / 2 - 150 - 28, 58, 56, 3, 1.5);
+    ul.fillStyle(this.awayColor, 1);
+    ul.fillRoundedRect(GAME_W / 2 + 150 - 28, 58, 56, 3, 1.5);
     this.hudScore = this.add
-      .text(GAME_W / 2, 42, '0 - 0', { fontFamily: FONT_DISPLAY, fontSize: '34px', color: CSS.gold })
+      .text(GAME_W / 2, 42, '0 - 0', { fontFamily: FONT_DISPLAY, fontSize: '42px', color: CSS.gold })
       .setOrigin(0.5)
       .setDepth(31);
     this.hudClock = this.add
@@ -1135,8 +1143,23 @@ export class MatchScene extends Phaser.Scene {
     this.tweens.add({ targets: this.bannerText, alpha: 0, delay: ms - 250, duration: 250 });
   }
 
+  private prevHudHome = 0;
+  private prevHudAway = 0;
   private updateHud(): void {
-    this.hudScore.setText(`${this.homeGoals} - ${this.awayGoals}`);
+    if (this.homeGoals !== this.prevHudHome || this.awayGoals !== this.prevHudAway) {
+      this.prevHudHome = this.homeGoals;
+      this.prevHudAway = this.awayGoals;
+      this.hudScore.setText(`${this.homeGoals} - ${this.awayGoals}`);
+      if (!this.reduceMotion) {
+        this.tweens.killTweensOf(this.hudScore);
+        this.hudScore.setScale(1);
+        this.tweens.add({ targets: this.hudScore, scale: 1.25, duration: 260, yoyo: true, ease: 'Elastic.easeOut' });
+        this.hudScore.setColor(CSS.white);
+        this.time.delayedCall(160, () => this.hudScore.setColor(CSS.gold));
+      }
+    } else {
+      this.hudScore.setText(`${this.homeGoals} - ${this.awayGoals}`);
+    }
     const minute = Math.floor((this.elapsed / this.duration) * 90);
     this.hudClock.setText(`${minute}'`);
     // surge bar (two-sided)
