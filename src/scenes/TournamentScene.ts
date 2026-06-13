@@ -178,6 +178,7 @@ export class TournamentScene extends Phaser.Scene {
         ? ['You have won The Globe Cup!', '+500 coins']
         : [`Winner: ${champ ? displayName(champ) : '—'}`, userStillIn(this.state) ? '' : 'You were knocked out earlier', '+120 coins'].filter(Boolean),
       accent: userWon ? C.gold : C.cyan,
+      outcome: userWon ? 'win' : 'loss',
       nextScene: 'Menu',
       buttonLabel: 'BACK TO MENU',
     });
