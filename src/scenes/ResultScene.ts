@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { audio } from '../core/audio';
+import { getSave } from '../core/save';
+import { drawTrophy } from '../ui/trophy';
 
 // Explicit, typed match outcome — the single source of truth for celebration
 // tiers (trophy size, confetti, count-up tint). Never infer this from `accent`:
@@ -32,6 +34,11 @@ export class ResultScene extends Phaser.Scene {
     g.fillStyle(accent, 0.1);
     g.fillRect(0, 180, GAME_W, 200);
 
+    // Trophy — the focal symbol of the result. Drawn before the title so it
+    // rises BEHIND the headline text. Full gold for a win, muted+smaller for
+    // a draw/defeat so the screen still has a centrepiece.
+    this.drawResultTrophy(cx, data.outcome === 'win');
+
     this.add.text(cx, 230, data.title, { fontFamily: FONT_DISPLAY, fontSize: '64px', color: '#' + accent.toString(16).padStart(6, '0') }).setOrigin(0.5);
     if (data.subtitle) {
       this.add.text(cx, 300, data.subtitle, { fontFamily: FONT_DISPLAY, fontSize: '28px', color: CSS.light }).setOrigin(0.5);
@@ -59,6 +66,33 @@ export class ResultScene extends Phaser.Scene {
       audio.resume();
       audio.play('ui');
       this.scene.start(data.nextScene);
+    });
+  }
+
+  private drawResultTrophy(cx: number, win: boolean): void {
+    const restY = 108;
+    const baseScale = win ? 0.85 : 0.55;
+    const trophy = drawTrophy(this, cx, restY, baseScale, win).setDepth(0);
+
+    if (getSave().settings.reduceMotion) return;
+
+    // rise up from below, then settle into a slow breathing pulse
+    trophy.y = GAME_H + 140;
+    this.tweens.add({
+      targets: trophy,
+      y: restY,
+      duration: 800,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        this.tweens.add({
+          targets: trophy,
+          scale: baseScale * 1.05,
+          duration: 1250,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        });
+      },
     });
   }
 }
