@@ -862,6 +862,7 @@ export class MatchScene extends Phaser.Scene {
     // reward trailing team with surge reset; scoring team modest
     if (side === 'home') this.surgeHome = 0;
     else this.surgeAway = 0;
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
     this.shake(260, 0.012);
     this.flash(180, 255, 255, 255);
     const col = side === 'home' ? this.homeColor : this.awayColor;
@@ -871,22 +872,86 @@ export class MatchScene extends Phaser.Scene {
     this.stateTimer = 1.6;
     // burst of particles
     this.goalBurst(col);
+    // bloom + scorer/power popup (motion only; bloom alpha capped and slightly
+    // delayed so it never co-peaks with the camera flash — photosensitivity).
+    if (!this.reduceMotion) {
+      const bloom = this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0.25).setDepth(48);
+      this.tweens.add({ targets: bloom, alpha: 0, duration: 260, delay: 60, ease: 'Quad.easeIn', onComplete: () => bloom.destroy() });
+      this.goalPopup(side, col, speed);
+    }
     audio.play('goal');
   }
 
+  // A scorer/power flourish near the goal mouth that drifts toward centre and
+  // fades. PWR is a coarse 0-99 read of the ball speed as it crossed the line.
+  private goalPopup(side: Side, col: number, speed: number): void {
+    const homeScored = side === 'home';
+    const pwr = Math.min(99, Math.round(speed / 12));
+    const code = homeScored ? this.home.code : this.away.code;
+    const x0 = homeScored ? this.px + this.pw - 90 : this.px + 90;
+    const popup = this.add
+      .text(x0, this.py + this.ph / 2 - 64, `${code}  PWR ${pwr}`, {
+        fontFamily: FONT_DISPLAY,
+        fontSize: '22px',
+        color: hex(col),
+      })
+      .setOrigin(0.5)
+      .setDepth(49)
+      .setStroke('#0e0a24', 4); // dark outline keeps it legible on any pitch colour
+    this.tweens.add({
+      targets: popup,
+      x: GAME_W / 2,
+      y: popup.y - 28,
+      alpha: { from: 1, to: 0 },
+      duration: 950,
+      ease: 'Quad.easeOut',
+      onComplete: () => popup.destroy(),
+    });
+  }
+
   private goalBurst(color: number): void {
-    const x = this.lastScorer === 'home' ? this.px + this.pw - 20 : this.px + 20;
+    const homeScored = this.lastScorer === 'home';
+    const x = homeScored ? this.px + this.pw - 20 : this.px + 20;
     const y = this.py + this.ph / 2;
-    for (let i = 0; i < 22; i++) {
-      const a = this.rng.range(0, Math.PI * 2);
-      const sp = this.rng.range(60, 320);
-      const dot = this.add.circle(x, y, this.rng.range(2, 5), color).setDepth(40);
+
+    // reduceMotion: keep the original subdued radial puff.
+    if (this.reduceMotion) {
+      for (let i = 0; i < 22; i++) {
+        const a = this.rng.range(0, Math.PI * 2);
+        const sp = this.rng.range(60, 320);
+        const dot = this.add.circle(x, y, this.rng.range(2, 5), color).setDepth(40);
+        this.tweens.add({
+          targets: dot,
+          x: x + Math.cos(a) * sp,
+          y: y + Math.sin(a) * sp,
+          alpha: 0,
+          duration: 700,
+          onComplete: () => dot.destroy(),
+        });
+      }
+      return;
+    }
+
+    // Full juice: ~40 mixed-colour particles sprayed in a 120° cone out of the
+    // goal mouth into the field, arcing down under gravity; ~1 in 5 is a glow.
+    const baseAngle = homeScored ? Math.PI : 0;
+    const palette = [color, C.gold, C.white];
+    for (let i = 0; i < 40; i++) {
+      const a = baseAngle + this.rng.range(-Math.PI / 3, Math.PI / 3);
+      const sp = this.rng.range(80, 360);
+      const col = palette[Math.floor(this.rng.range(0, palette.length))];
+      const size = this.rng.range(2, 8);
+      const glow = this.rng.bool(0.2);
+      const dot = glow
+        ? this.add.image(x, y, 'softcircle').setTint(col).setScale(size / 12).setDepth(40)
+        : (this.add.circle(x, y, size, col).setDepth(40) as Phaser.GameObjects.GameObject);
       this.tweens.add({
         targets: dot,
         x: x + Math.cos(a) * sp,
-        y: y + Math.sin(a) * sp,
+        y: y + Math.sin(a) * sp + this.rng.range(50, 170), // gravity drop
         alpha: 0,
-        duration: 700,
+        duration: this.rng.range(700, 1000),
+        ease: 'Quad.easeOut',
         onComplete: () => dot.destroy(),
       });
     }
