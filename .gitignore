@@ -4,3 +4,7 @@ dist
 *.local
 .vite
 coverage
+
+# QA / test artifacts
+slice*.png
+.playwright-mcp/
