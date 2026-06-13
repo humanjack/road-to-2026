@@ -4,6 +4,7 @@ import { getActiveSlot, setActiveSlot, getSlotSummaries, deleteSlot, type SlotSu
 import { resolveTeam } from '../data/extras';
 import { displayName } from '../data/names';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 
 export class SlotSelectScene extends Phaser.Scene {
   constructor() {
@@ -12,6 +13,7 @@ export class SlotSelectScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
     this.add
       .text(GAME_W / 2, 70, 'SAVE SLOTS', { fontFamily: FONT_DISPLAY, fontSize: '40px', color: CSS.light })
       .setOrigin(0.5);
@@ -44,7 +46,7 @@ export class SlotSelectScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     back.on('pointerdown', () => {
       audio.play('ui');
-      this.scene.start('Menu');
+      transitionTo(this, 'Menu');
     });
   }
 
@@ -87,7 +89,7 @@ export class SlotSelectScene extends Phaser.Scene {
     this.slotButton(x + w / 2, y + h - 70, w - 60, isActive ? 'SELECTED' : 'SELECT', isActive ? C.lime : C.surge, () => {
       setActiveSlot(s.slot);
       audio.play('ui');
-      this.scene.start('Menu');
+      transitionTo(this, 'Menu');
     });
     // DELETE (only if data exists)
     if (s.exists) {
