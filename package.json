@@ -1,0 +1,22 @@
+{
+  "name": "groundswell-26",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GROUNDSWELL '26: World Eleven — a fast arcade football game",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "phaser": "^3.87.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}
