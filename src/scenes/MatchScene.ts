@@ -42,11 +42,25 @@ interface Player {
   faceX: number;
   faceY: number;
   isUser: boolean;
-  gfx: Phaser.GameObjects.Arc;
+  // --- appearance (all precomputed once in makePlayer; the draw loop only reads) ---
+  idx: number; // 0..9 spawn index — drives skin/hair variety + run-cycle desync
+  kit: number; // shirt colour (team primary, or GK lime)
+  shorts: number; // hips + legs (darkened kit, or team-tinted for GK)
+  shoulderHi: number; // shoulder caps (lightened kit — fake top-light)
+  skin: number;
+  hair: number;
+  phase: number; // run-cycle phase offset so the 10 figures don't move in lockstep
+  renderAng: number; // smoothed facing angle, lerped toward atan2(faceY, faceX)
 }
 
 const PR = 15; // player radius
 const BR = 9; // ball radius
+
+// Realistic-player palette. Skin/hair are cosmetic variety ONLY — team identity
+// is carried by the kit colour + the dyn centre dot, never by skin/hair.
+const SKIN = [0xf0c39a, 0xe8b07d, 0xc68642, 0x8d5524, 0x5a3a22];
+const HAIR = [0x1b1b1f, 0x2b1d12, 0x4a2f18, 0x6b4a2a, 0x111014];
+const GK_KIT = 0x7be83c; // keeper shirt — high-vis lime, contrasts both teams + pitch
 const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-bar render
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
@@ -107,6 +121,8 @@ export class MatchScene extends Phaser.Scene {
   private touchVec = { x: 0, y: 0, active: false };
 
   // gfx
+  private bodyGfx!: Phaser.GameObjects.Graphics; // the footballer figures (depth 10)
+  private shadowGfx!: Phaser.GameObjects.Graphics; // upright drop shadows (depth 9)
   private dyn!: Phaser.GameObjects.Graphics;
   private chargeText!: Phaser.GameObjects.Text;
   private pulse = 0; // per-frame pulse phase [0..1], reused by ring + surge fx
@@ -168,6 +184,8 @@ export class MatchScene extends Phaser.Scene {
     this.reduceMotion = getSave().settings.reduceMotion;
     this.ballTrail = [];
     this.trailGfx = this.add.graphics().setDepth(14);
+    this.shadowGfx = this.add.graphics().setDepth(9);
+    this.bodyGfx = this.add.graphics().setDepth(10);
     this.dyn = this.add.graphics().setDepth(20);
     this.chargeText = this.add
       .text(0, 0, '', { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.light })
@@ -318,25 +336,22 @@ export class MatchScene extends Phaser.Scene {
       { role: 'MID', fx: 0.46, fy: 0.5 },
       { role: 'FWD', fx: 0.66, fy: 0.42 },
     ];
-    for (const f of form) {
+    form.forEach((f, i) => {
       const hx = this.px + f.fx * this.pw;
       const hy = this.py + f.fy * this.ph;
-      this.players.push(this.makePlayer('home', f.role, hx, hy));
-    }
-    for (const f of form) {
+      this.players.push(this.makePlayer('home', f.role, hx, hy, i));
+    });
+    form.forEach((f, i) => {
       const hx = this.px + (1 - f.fx) * this.pw;
       const hy = this.py + f.fy * this.ph;
-      this.players.push(this.makePlayer('away', f.role, hx, hy));
-    }
+      this.players.push(this.makePlayer('away', f.role, hx, hy, 5 + i));
+    });
   }
 
-  private makePlayer(side: Side, role: Role, hx: number, hy: number): Player {
-    const color = side === 'home' ? this.homeColor : this.awayColor;
+  private makePlayer(side: Side, role: Role, hx: number, hy: number, idx: number): Player {
     const isGK = role === 'GK';
-    const gfx = this.add
-      .circle(hx, hy, PR, color)
-      .setStrokeStyle(3, isGK ? C.lime : 0x0e0a24, 1)
-      .setDepth(10);
+    const teamColor = side === 'home' ? this.homeColor : this.awayColor;
+    const kit = isGK ? GK_KIT : teamColor;
     return {
       side,
       role,
@@ -349,8 +364,25 @@ export class MatchScene extends Phaser.Scene {
       faceX: side === 'home' ? 1 : -1,
       faceY: 0,
       isUser: false,
-      gfx,
+      idx,
+      kit,
+      // GK keeps team identity via team-tinted shorts; outfielders get darkened kit.
+      shorts: isGK ? this.shade(teamColor, 0.8) : this.shade(kit, 0.62),
+      shoulderHi: this.shade(kit, 1.14),
+      skin: SKIN[(idx * 2 + 1) % SKIN.length],
+      hair: HAIR[(idx * 3) % HAIR.length],
+      phase: idx * 1.7, // deterministic desync (avoid Math.random for reproducibility)
+      renderAng: side === 'home' ? 0 : Math.PI,
     };
+  }
+
+  // Scale an RGB hex by `f` per channel (f<1 darken, f>1 lighten), clamped. Pure
+  // integer math, no allocation — safe to call once per player at spawn.
+  private shade(hexColor: number, f: number): number {
+    const r = Math.min(255, ((hexColor >> 16) & 0xff) * f) | 0;
+    const g = Math.min(255, ((hexColor >> 8) & 0xff) * f) | 0;
+    const b = Math.min(255, (hexColor & 0xff) * f) | 0;
+    return (r << 16) | (g << 8) | b;
   }
 
   private setupInput(): void {
@@ -1105,9 +1137,20 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private renderEntities(): void {
+    // Players are redrawn every frame: an upright shadow pass (depth 9) under a
+    // y-sorted body pass (depth 10), so nearer (lower) figures overlap farther
+    // ones. Both batch into one Graphics each — trivial for 10 players.
+    this.shadowGfx.clear();
+    this.shadowGfx.fillStyle(C.deep, 0.26);
     for (const p of this.players) {
-      p.gfx.setPosition(p.x, p.y);
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      this.shadowGfx.fillEllipse(p.x + 2, p.y + 3, PR * 2.1, PR * 1.45);
     }
+    this.bodyGfx.clear();
+    const runT = this.reduceMotion ? 0 : this.time.now * 0.018;
+    const order = [...this.players].sort((a, b) => a.y - b.y);
+    for (const p of order) this.drawPlayer(p, runT);
+
     this.ballGfx.setPosition(this.ball.x, this.ball.y);
 
     // ball trail (afterimages) when the ball is loose and moving quickly
@@ -1168,6 +1211,74 @@ export class MatchScene extends Phaser.Scene {
       this.dyn.fillTriangle(ap.x - 6, ap.y - PR - 12, ap.x + 6, ap.y - PR - 12, ap.x, ap.y - PR - 4);
     }
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
+  }
+
+  // A top-down footballer drawn in local space (forward = +x), then placed and
+  // rotated to the player's smoothed facing. Arms/legs slide fore/aft in a
+  // contralateral gait whose amplitude scales with speed; reduce-motion freezes
+  // the swing (the figure still turns to face its heading — orientation, not
+  // motion decoration). Everything is in units of PR so it scales with the body.
+  private drawPlayer(p: Player, runT: number): void {
+    // a single non-finite coord would poison the whole batched Graphics (one bad
+    // translateCanvas blanks every figure), so skip a corrupted player outright
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    // smooth the facing so quick AI re-targets / near-target velocity zeroing
+    // don't make the figure twitch or spin in place
+    const fl = Math.hypot(p.faceX, p.faceY) || 1;
+    const target = Math.atan2(p.faceY / fl, p.faceX / fl);
+    if (!Number.isFinite(p.renderAng)) p.renderAng = target; // recover from a bad angle
+    const dA = Phaser.Math.Angle.Wrap(target - p.renderAng);
+    p.renderAng = Phaser.Math.Angle.Wrap(p.renderAng + dA * (this.reduceMotion ? 1 : 0.3));
+
+    const speed = Math.hypot(p.vx, p.vy);
+    const gait = Phaser.Math.Clamp(speed / 200, 0, 1); // 200 ≈ base playerSpeed
+    const sw = this.reduceMotion ? 0 : Math.sin(runT * 2 + p.phase) * 0.5 * gait * PR; // px stride
+
+    const g = this.bodyGfx;
+    g.save();
+    g.translateCanvas(p.x, p.y);
+    g.rotateCanvas(p.renderAng);
+
+    // limbs first (under the torso), sliding along the facing axis, contralateral
+    this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, sw, p.shorts); // far leg
+    this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, -sw, p.shorts); // near leg
+    this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, -sw, p.skin); // far arm
+    this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, sw, p.skin); // near arm
+
+    // hips (shorts) then torso (kit) — torso is wider across the shoulders (y)
+    g.fillStyle(p.shorts, 1);
+    g.fillEllipse(-0.15 * PR, 0, 1.15 * PR, 1.3 * PR);
+    g.fillStyle(p.kit, 1);
+    g.fillEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
+    // shoulder caps — lightened kit, a cheap fake top-light that gives the torso form
+    g.fillStyle(p.shoulderHi, 1);
+    g.fillCircle(0.15 * PR, 0.6 * PR, 0.32 * PR);
+    g.fillCircle(0.15 * PR, -0.6 * PR, 0.32 * PR);
+
+    // hair crown behind, head forward of torso centre, nose nub at the very front:
+    // three redundant "which way is he facing" cues
+    g.fillStyle(p.hair, 1);
+    g.fillCircle(0.3 * PR, 0, 0.44 * PR);
+    g.fillStyle(p.skin, 1);
+    g.fillCircle(0.44 * PR, 0, 0.48 * PR);
+    g.fillTriangle(0.94 * PR, 0, 0.8 * PR, 0.11 * PR, 0.8 * PR, -0.11 * PR);
+
+    g.restore();
+  }
+
+  // A leg/arm as a rounded capsule oriented along the facing axis, offset
+  // fore/aft by `offX` for the run cycle. Drawn in the body's local frame.
+  private drawLimb(
+    g: Phaser.GameObjects.Graphics,
+    baseX: number,
+    baseY: number,
+    len: number,
+    w: number,
+    offX: number,
+    color: number,
+  ): void {
+    g.fillStyle(color, 1);
+    g.fillRoundedRect(baseX + offX - len / 2, baseY - w / 2, len, w, Math.min(len, w) * 0.49);
   }
 
   // Three-zone charge bar — weak (0-40%, dim) / strong (40-80%, cyan) /
