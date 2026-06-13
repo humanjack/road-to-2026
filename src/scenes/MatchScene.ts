@@ -216,6 +216,14 @@ export class MatchScene extends Phaser.Scene {
       g.fillStyle(0x19d3f0, 0.08);
       g.fillRect(this.px, this.py, this.pw, this.ph * 0.22);
     }
+    // depth/lighting (drawn once, under the crisp line work): a soft light
+    // top-left, a soft shade bottom-right, and a faint colour glow from each
+    // goal end. Kept very low alpha so players/ball stay perfectly readable.
+    this.softGlow(g, this.px + this.pw * 0.3, this.py + this.ph * 0.25, 280, 0xffffff, 0.05);
+    this.softGlow(g, this.px + this.pw * 0.75, this.py + this.ph * 0.8, 300, C.deep, 0.1);
+    this.softGlow(g, this.px + 50, this.py + this.ph / 2, 200, this.homeColor, 0.06);
+    this.softGlow(g, this.px + this.pw - 50, this.py + this.ph / 2, 200, this.awayColor, 0.06);
+
     g.lineStyle(3, 0xffffff, 0.5);
     g.strokeRect(this.px, this.py, this.pw, this.ph);
     g.lineBetween(this.px + this.pw / 2, this.py, this.px + this.pw / 2, this.py + this.ph);
@@ -232,6 +240,16 @@ export class MatchScene extends Phaser.Scene {
     g.lineStyle(6, C.gold, 0.95);
     g.lineBetween(this.px - 2, gy0, this.px - 2, gy0 + this.goalH);
     g.lineBetween(this.px + this.pw + 2, gy0, this.px + this.pw + 2, gy0 + this.goalH);
+  }
+
+  // Stacked translucent circles forming a soft radial glow (bright centre,
+  // faint edge) drawn straight into the pitch Graphics — no per-frame cost.
+  private softGlow(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, color: number, peak: number): void {
+    const steps = 6;
+    for (let i = 0; i < steps; i++) {
+      g.fillStyle(color, (peak * (i + 1)) / steps);
+      g.fillCircle(x, y, r * (1 - i / steps));
+    }
   }
 
   private buildHud(): void {
