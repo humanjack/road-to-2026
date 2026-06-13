@@ -1161,11 +1161,11 @@ export class MatchScene extends Phaser.Scene {
     this.dyn.fillStyle(C.dark, 0.55);
     this.dyn.fillRect(bx, by, bw, bh);
     // filled portion, coloured by the current zone
-    const zoneCol = charge >= 0.8 ? C.surge : charge >= 0.4 ? C.cyan : C.mid;
+    const zoneCol = charge > 0.8 ? C.surge : charge >= 0.4 ? C.cyan : C.mid;
     this.dyn.fillStyle(zoneCol, 1);
     this.dyn.fillRect(bx, by, bw * charge, bh);
     // pulsing screamer overlay once past the threshold
-    if (charge >= 0.8) {
+    if (charge > 0.8) {
       this.dyn.fillStyle(C.surge, 0.35 + 0.4 * this.pulse);
       this.dyn.fillRect(bx + bw * 0.8, by, bw * 0.2, bh);
     }
@@ -1175,7 +1175,7 @@ export class MatchScene extends Phaser.Scene {
     // live percentage readout
     this.chargeText
       .setText(`${Math.round(charge * 100)}%`)
-      .setColor(charge >= 0.8 ? CSS.surge : CSS.light)
+      .setColor(charge > 0.8 ? CSS.surge : CSS.light)
       .setPosition(ap.x, by - 9)
       .setVisible(true);
   }
