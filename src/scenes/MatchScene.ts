@@ -6,6 +6,7 @@ import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
 import { recordMatch, getSave } from '../core/save';
 import { penaltyShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
+import { approachVelocity, PLAYER_ACCEL, PLAYER_DECEL } from '../core/movement';
 import { audio } from '../core/audio';
 
 export interface MatchInit {
@@ -610,8 +611,12 @@ export class MatchScene extends Phaser.Scene {
     const v = this.inputVector();
     const sprint = this.keys.SHIFT.isDown ? 1.25 : 1;
     const speed = this.playerSpeed(p, 'home') * sprint;
-    p.vx = v.x * speed;
-    p.vy = v.y * speed;
+    // momentum: ease velocity toward the desired vector instead of snapping, so
+    // starts feel responsive and hard turns carry weight. Facing stays instant
+    // (zero-latency aim — the carried ball still points where you press).
+    const nv = approachVelocity(p.vx, p.vy, v.x * speed, v.y * speed, PLAYER_ACCEL, PLAYER_DECEL, dt);
+    p.vx = nv.x;
+    p.vy = nv.y;
     if (v.x !== 0 || v.y !== 0) {
       p.faceX = v.x;
       p.faceY = v.y;
@@ -825,19 +830,23 @@ export class MatchScene extends Phaser.Scene {
     return bd;
   }
 
-  private steer(p: Player, tx: number, ty: number, speed: number, _dt: number): void {
+  private steer(p: Player, tx: number, ty: number, speed: number, dt: number): void {
     const dx = tx - p.x;
     const dy = ty - p.y;
     const len = Math.hypot(dx, dy);
-    if (len < 4) {
-      p.vx = 0;
-      p.vy = 0;
-      return;
+    let desVx = 0;
+    let desVy = 0;
+    if (len >= 4) {
+      desVx = (dx / len) * speed;
+      desVy = (dy / len) * speed;
+      p.faceX = dx / len;
+      p.faceY = dy / len;
     }
-    p.vx = (dx / len) * speed;
-    p.vy = (dy / len) * speed;
-    p.faceX = dx / len;
-    p.faceY = dy / len;
+    // same momentum model as the user (AI eases to its target velocity and
+    // brakes to a stop near it) so every figure shares the weighty feel.
+    const nv = approachVelocity(p.vx, p.vy, desVx, desVy, PLAYER_ACCEL, PLAYER_DECEL, dt);
+    p.vx = nv.x;
+    p.vy = nv.y;
   }
 
   private playerSpeed(p: Player, side: Side): number {
