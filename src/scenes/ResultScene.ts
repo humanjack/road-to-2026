@@ -39,6 +39,12 @@ export class ResultScene extends Phaser.Scene {
     // a draw/defeat so the screen still has a centrepiece.
     this.drawResultTrophy(cx, data.outcome === 'win');
 
+    // Celebrate a win/champion with falling confetti (skipped for draw/defeat,
+    // and entirely suppressed under reduceMotion).
+    if (data.outcome === 'win' && !getSave().settings.reduceMotion) {
+      this.spawnConfetti();
+    }
+
     this.add.text(cx, 230, data.title, { fontFamily: FONT_DISPLAY, fontSize: '64px', color: '#' + accent.toString(16).padStart(6, '0') }).setOrigin(0.5);
     if (data.subtitle) {
       this.add.text(cx, 300, data.subtitle, { fontFamily: FONT_DISPLAY, fontSize: '28px', color: CSS.light }).setOrigin(0.5);
@@ -76,7 +82,7 @@ export class ResultScene extends Phaser.Scene {
 
     if (getSave().settings.reduceMotion) return;
 
-    // rise up from below, then settle into a slow breathing pulse
+    // rise up from below, then settle into a slow breathing pulse (trophy)
     trophy.y = GAME_H + 140;
     this.tweens.add({
       targets: trophy,
@@ -94,5 +100,28 @@ export class ResultScene extends Phaser.Scene {
         });
       },
     });
+  }
+
+  // ~70 palette-coloured paper pieces cascading from the top edge, drifting and
+  // tumbling as they fall, then fading and self-destroying. Win-only; gated by
+  // the caller on reduceMotion.
+  private spawnConfetti(): void {
+    const colors = [C.surge, C.cyan, C.lime, C.gold, C.flare];
+    for (let i = 0; i < 70; i++) {
+      const x = Phaser.Math.Between(0, GAME_W);
+      const col = colors[Phaser.Math.Between(0, colors.length - 1)];
+      const piece = this.add.rectangle(x, Phaser.Math.Between(-40, -10), 4, 7, col).setDepth(60);
+      this.tweens.add({
+        targets: piece,
+        y: GAME_H + 40,
+        x: x + Phaser.Math.Between(-180, 180),
+        angle: Phaser.Math.Between(360, 1080),
+        alpha: { from: 1, to: 0 },
+        duration: Phaser.Math.Between(1600, 2200),
+        delay: Phaser.Math.Between(0, 700),
+        ease: 'Quad.easeIn',
+        onComplete: () => piece.destroy(),
+      });
+    }
   }
 }
