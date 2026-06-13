@@ -84,3 +84,67 @@ export function approachVelocity(
   }
   return { x: vx, y: vy };
 }
+
+// --- sprint & stamina ------------------------------------------------------
+//
+// Sprint is a managed burst, not a free always-on button. While sprinting the
+// player drains a small stamina pool; jogging/standing refills it. When it hits
+// empty a recovery *lock* engages — you can't re-sprint until stamina climbs
+// back over `unlockAt` (hysteresis), so an exhausted player has a real moment of
+// vulnerability instead of stutter-sprinting at zero. Stamina only ever gates
+// the sprint *bonus*; base movement is never slowed by it.
+
+export interface StaminaTuning {
+  /** Fraction drained per second while sprinting (empty in ~1/drain s). */
+  drain: number;
+  /** Fraction recovered per second while not sprinting (full in ~1/recover s). */
+  recover: number;
+  /** After hitting empty, stamina must climb back to this before sprint re-enables. */
+  unlockAt: number;
+}
+
+export const STAMINA: StaminaTuning = {
+  drain: 0.3, // ~3.3s of continuous sprint to empty
+  recover: 0.2, // ~5s from empty to full
+  unlockAt: 0.3, // ~1.5s of recovery before you can sprint again
+};
+
+/** Top-speed multiplier while sprinting (a real burst over the old flat 1.25). */
+export const SPRINT_SPEED_MUL = 1.32;
+/** Acceleration multiplier while sprinting so the burst kicks in quickly. */
+export const SPRINT_ACCEL_MUL = 1.15;
+
+export interface StaminaState {
+  stamina: number; // 0..1
+  locked: boolean; // true while in the post-exhaustion recovery lock
+  canSprint: boolean; // whether a sprint *bonus* may apply next frame
+}
+
+/**
+ * Advance a stamina pool one step. `draining` is whether the player is actually
+ * sprint-moving this frame (the caller decides that from current `canSprint`,
+ * intent, and whether they're moving). Returns the new pool, lock state, and
+ * whether sprint is permitted going forward.
+ */
+export function stepStamina(
+  stamina: number,
+  draining: boolean,
+  locked: boolean,
+  dt: number,
+  cfg: StaminaTuning = STAMINA,
+): StaminaState {
+  if (!Number.isFinite(stamina)) stamina = 1;
+  if (!(dt > 0)) return { stamina, locked, canSprint: !locked && stamina > 0 };
+
+  if (draining) {
+    stamina -= cfg.drain * dt;
+    if (stamina <= 0) {
+      stamina = 0;
+      locked = true; // exhausted → engage recovery lock
+    }
+  } else {
+    stamina = Math.min(1, stamina + cfg.recover * dt);
+    if (locked && stamina >= cfg.unlockAt) locked = false; // recovered enough
+  }
+  return { stamina, locked, canSprint: !locked && stamina > 0 };
+}

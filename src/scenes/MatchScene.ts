@@ -6,7 +6,14 @@ import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
 import { recordMatch, getSave } from '../core/save';
 import { penaltyShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
-import { approachVelocity, PLAYER_ACCEL, PLAYER_DECEL } from '../core/movement';
+import {
+  approachVelocity,
+  stepStamina,
+  PLAYER_ACCEL,
+  PLAYER_DECEL,
+  SPRINT_SPEED_MUL,
+  SPRINT_ACCEL_MUL,
+} from '../core/movement';
 import { audio } from '../core/audio';
 
 export interface MatchInit {
@@ -53,6 +60,8 @@ interface Player {
   hair: number;
   phase: number; // run-cycle phase offset so the 10 figures don't move in lockstep
   renderAng: number; // smoothed facing angle, lerped toward atan2(faceY, faceX)
+  stamina: number; // 0..1 sprint pool (only the user-controlled player drains it)
+  sprintLock: boolean; // post-exhaustion recovery lock (can't sprint until recovered)
 }
 
 const PR = 15; // player radius
@@ -395,6 +404,8 @@ export class MatchScene extends Phaser.Scene {
       hair: HAIR[(idx * 3) % HAIR.length],
       phase: idx * 1.7, // deterministic desync (avoid Math.random for reproducibility)
       renderAng: side === 'home' ? 0 : Math.PI,
+      stamina: 1,
+      sprintLock: false,
     };
   }
 
@@ -609,12 +620,22 @@ export class MatchScene extends Phaser.Scene {
     const p = this.players[this.activeIdx];
     if (!p) return;
     const v = this.inputVector();
-    const sprint = this.keys.SHIFT.isDown ? 1.25 : 1;
-    const speed = this.playerSpeed(p, 'home') * sprint;
+    const moving = v.x !== 0 || v.y !== 0;
+    // Sprint is a stamina-gated burst. You can sprint this frame only if you
+    // want to, you're moving, and you're not in the post-exhaustion lock; the
+    // pool then drains while sprinting and recovers otherwise.
+    const wantSprint = this.keys.SHIFT.isDown && moving;
+    const sprinting = wantSprint && !p.sprintLock && p.stamina > 0;
+    const st = stepStamina(p.stamina, sprinting, p.sprintLock, dt);
+    p.stamina = st.stamina;
+    p.sprintLock = st.locked;
+    const speedMul = sprinting ? SPRINT_SPEED_MUL : 1;
+    const accel = sprinting ? PLAYER_ACCEL * SPRINT_ACCEL_MUL : PLAYER_ACCEL;
+    const speed = this.playerSpeed(p, 'home') * speedMul;
     // momentum: ease velocity toward the desired vector instead of snapping, so
     // starts feel responsive and hard turns carry weight. Facing stays instant
     // (zero-latency aim — the carried ball still points where you press).
-    const nv = approachVelocity(p.vx, p.vy, v.x * speed, v.y * speed, PLAYER_ACCEL, PLAYER_DECEL, dt);
+    const nv = approachVelocity(p.vx, p.vy, v.x * speed, v.y * speed, accel, PLAYER_DECEL, dt);
     p.vx = nv.x;
     p.vy = nv.y;
     if (v.x !== 0 || v.y !== 0) {
@@ -1245,8 +1266,27 @@ export class MatchScene extends Phaser.Scene {
       // small arrow under active
       this.dyn.fillStyle(C.gold, 1);
       this.dyn.fillTriangle(ap.x - 6, ap.y - PR - 12, ap.x + 6, ap.y - PR - 12, ap.x, ap.y - PR - 4);
+      this.drawStaminaNub(ap);
     }
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
+  }
+
+  // Stamina nub above the active player: a small bar that depletes as you sprint
+  // and refills as you jog. Hidden when full and ready (no clutter); turns to a
+  // pulsing warning colour while the post-exhaustion lock is engaged. It's
+  // information (not decoration), so it renders under reduceMotion too — the
+  // pulse just resolves to a steady alpha.
+  private drawStaminaNub(ap: Player): void {
+    if (ap.stamina >= 0.999 && !ap.sprintLock) return;
+    const bw = 28;
+    const bh = 4;
+    const bx = ap.x - bw / 2;
+    const by = ap.y - PR - 22;
+    this.dyn.fillStyle(C.dark, 0.6);
+    this.dyn.fillRect(bx, by, bw, bh);
+    const col = ap.sprintLock ? C.flare : ap.stamina > 0.5 ? C.lime : ap.stamina > 0.25 ? C.gold : C.flare;
+    this.dyn.fillStyle(col, ap.sprintLock ? 0.55 + 0.45 * this.pulse : 1);
+    this.dyn.fillRect(bx, by, bw * Math.max(0, ap.stamina), bh);
   }
 
   // A top-down footballer drawn in local space (forward = +x), then placed and
