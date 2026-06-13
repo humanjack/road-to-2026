@@ -8,6 +8,7 @@ import { TournamentScene } from './scenes/TournamentScene';
 import { ResultScene } from './scenes/ResultScene';
 import { SettingsScene } from './scenes/SettingsScene';
 import { ShopScene } from './scenes/ShopScene';
+import { SlotSelectScene } from './scenes/SlotSelectScene';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -30,7 +31,17 @@ const config: Phaser.Types.Core.GameConfig = {
     pixelArt: false,
     antialias: true,
   },
-  scene: [BootScene, MenuScene, TeamSelectScene, TournamentScene, MatchScene, ResultScene, SettingsScene, ShopScene],
+  scene: [
+    BootScene,
+    MenuScene,
+    TeamSelectScene,
+    TournamentScene,
+    MatchScene,
+    ResultScene,
+    SettingsScene,
+    ShopScene,
+    SlotSelectScene,
+  ],
 };
 
 const game = new Phaser.Game(config);

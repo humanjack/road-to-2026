@@ -1,7 +1,16 @@
 import type { SaveGame, TournamentState, GameSettings, CareerStats, Cosmetics } from '../data/types';
 
 const STORAGE_KEY = 'groundswell26.save.v1';
+const META_KEY = 'groundswell26.activeSlot';
 export const SAVE_VERSION = 1;
+export const SLOT_COUNT = 3;
+
+// Slot 0 keeps the original key (backward compatible); slots 1+ are suffixed.
+function slotKey(slot: number): string {
+  return slot === 0 ? STORAGE_KEY : `${STORAGE_KEY}.s${slot}`;
+}
+
+let activeSlot = -1; // lazily resolved from storage
 
 function defaultSettings(): GameSettings {
   return { fictionalNations: false, sfx: true, music: true };
@@ -35,6 +44,88 @@ function storage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+// --- save slots -----------------------------------------------------------
+
+export function getActiveSlot(): number {
+  if (activeSlot >= 0) return activeSlot;
+  let v = 0;
+  const s = storage();
+  if (s) {
+    try {
+      const m = s.getItem(META_KEY);
+      const n = m != null ? parseInt(m, 10) : 0;
+      if (n >= 0 && n < SLOT_COUNT) v = n;
+    } catch {
+      /* ignore */
+    }
+  }
+  activeSlot = v;
+  return v;
+}
+
+export function setActiveSlot(slot: number): void {
+  if (slot < 0 || slot >= SLOT_COUNT) return;
+  activeSlot = slot;
+  cache = null; // force reload of the newly-selected slot
+  const s = storage();
+  if (s) {
+    try {
+      s.setItem(META_KEY, String(slot));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface SlotSummary {
+  slot: number;
+  exists: boolean;
+  coins: number;
+  cups: number;
+  userTeamId: string | null;
+  inProgress: boolean;
+}
+
+export function getSlotSummaries(): SlotSummary[] {
+  const s = storage();
+  const out: SlotSummary[] = [];
+  for (let i = 0; i < SLOT_COUNT; i++) {
+    let summary: SlotSummary = { slot: i, exists: false, coins: 0, cups: 0, userTeamId: null, inProgress: false };
+    if (s) {
+      try {
+        const txt = s.getItem(slotKey(i));
+        if (txt) {
+          const g = migrate(JSON.parse(txt));
+          summary = {
+            slot: i,
+            exists: true,
+            coins: g.coins,
+            cups: g.stats.tournamentsWon,
+            userTeamId: g.tournament?.userTeamId ?? null,
+            inProgress: !!g.tournament && g.tournament.phase !== 'done',
+          };
+        }
+      } catch {
+        /* leave as empty */
+      }
+    }
+    out.push(summary);
+  }
+  return out;
+}
+
+export function deleteSlot(slot: number): void {
+  const s = storage();
+  if (s) {
+    try {
+      s.removeItem(slotKey(slot));
+    } catch {
+      /* ignore */
+    }
+  }
+  if (slot === getActiveSlot()) cache = defaultSave();
 }
 
 // Structural validation so a corrupt / hand-edited / future-incompatible
@@ -79,7 +170,7 @@ export function loadSave(): SaveGame {
     return cache;
   }
   try {
-    const txt = s.getItem(STORAGE_KEY);
+    const txt = s.getItem(slotKey(getActiveSlot()));
     cache = txt ? migrate(JSON.parse(txt)) : defaultSave();
   } catch {
     cache = defaultSave();
@@ -92,7 +183,7 @@ export function writeSave(save: SaveGame): void {
   const s = storage();
   if (!s) return;
   try {
-    s.setItem(STORAGE_KEY, JSON.stringify(save));
+    s.setItem(slotKey(getActiveSlot()), JSON.stringify(save));
   } catch {
     // Quota or privacy mode — fail silently; game still runs from in-memory cache.
   }
@@ -174,7 +265,7 @@ export function clearSave(): void {
   const s = storage();
   if (s) {
     try {
-      s.removeItem(STORAGE_KEY);
+      s.removeItem(slotKey(getActiveSlot()));
     } catch {
       /* ignore */
     }

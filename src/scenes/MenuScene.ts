@@ -73,8 +73,9 @@ export class MenuScene extends Phaser.Scene {
     // top-right utility buttons
     this.cornerButton(GAME_W - 90, 40, 'SETTINGS', () => this.scene.start('Settings'));
     this.cornerButton(GAME_W - 230, 40, 'SHOP', () => this.scene.start('Shop'));
+    this.cornerButton(GAME_W - 370, 40, 'SAVES', () => this.scene.start('SlotSelect'));
     if (isUnlocked(WORLD_ELEVEN.id)) {
-      this.cornerButton(GAME_W - 370, 40, 'WORLD XI', () => this.launchWorldEleven());
+      this.cornerButton(GAME_W - 510, 40, 'WORLD XI', () => this.launchWorldEleven());
     }
 
     const save = getSave();
