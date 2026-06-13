@@ -258,19 +258,18 @@ export class TournamentScene extends Phaser.Scene {
         const ry = y + 34 + idx * 27;
         const team = map[rowS.teamId];
         const isUser = rowS.teamId === this.state.userTeamId;
-        // qualification colour: top2 green, 3rd amber
-        const dot = idx < 2 ? C.lime : idx === 2 ? C.gold : C.mid;
-        const dg = this.add.graphics();
-        dg.fillStyle(dot, 1);
-        dg.fillCircle(x + 16, ry + 8, 4);
-        this.add.text(x + 28, ry, `${team.code}`, {
+        this.add.text(x + 14, ry, `${team.code}`, {
           fontFamily: FONT_DISPLAY,
           fontSize: '14px',
           color: isUser ? CSS.gold : CSS.light,
         });
         this.add
-          .text(x + 96, ry + 1, displayName(team), { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.mid })
-          .setFixedSize(120, 14);
+          .text(x + 58, ry + 1, displayName(team), { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.mid })
+          .setFixedSize(86, 14);
+        // qualification status badge — top2 QUALIFIED, 3rd PLAYOFF, else OUT.
+        // Always a WORD (not colour alone) for colour-blind readability.
+        const status = idx < 2 ? { label: 'QUALIFIED', col: C.lime } : idx === 2 ? { label: 'PLAYOFF', col: C.gold } : { label: 'OUT', col: C.flare };
+        this.drawQualifyBadge(x + 202, ry + 8, status.label, status.col, isUser);
         this.add
           .text(x + cellW - 12, ry, String(rowS.Pts), {
             fontFamily: FONT_DISPLAY,
@@ -280,6 +279,22 @@ export class TournamentScene extends Phaser.Scene {
           .setOrigin(1, 0);
       });
     });
+  }
+
+  private drawQualifyBadge(cx: number, cy: number, label: string, color: number, isUser: boolean): void {
+    const w = 72;
+    const h = 16;
+    const g = this.add.graphics();
+    g.fillStyle(color, 0.85);
+    g.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, 4);
+    if (isUser) {
+      g.lineStyle(1.5, C.gold, 1);
+      g.strokeRoundedRect(cx - w / 2, cy - h / 2, w, h, 4);
+    }
+    this.add
+      .text(cx, cy, label, { fontFamily: FONT_DISPLAY, fontSize: '9px', color: CSS.deep })
+      .setOrigin(0.5)
+      .setLetterSpacing(1);
   }
 
   private renderKnockout(): void {
