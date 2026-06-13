@@ -17,6 +17,7 @@ export interface MatchInit {
   matchId?: string;
   returnScene?: string;
   durationSec?: number;
+  roundLabel?: string;
 }
 
 type Side = 'home' | 'away';
@@ -1272,7 +1273,79 @@ export class MatchScene extends Phaser.Scene {
         buttonLabel: 'BACK TO MENU',
       });
     } else {
-      this.scene.start(this.cfg.returnScene ?? 'Tournament', { fromMatch: true });
+      const returnToTournament = () => this.scene.start(this.cfg.returnScene ?? 'Tournament', { fromMatch: true });
+      // Knockout ties get a result beat for the user before the bracket
+      // returns; group matches (lower stakes) go straight back.
+      if (this.cfg.context === 'knockout') {
+        this.showKnockoutVerdict(winnerId === this.cfg.userTeamId, returnToTournament);
+      } else {
+        returnToTournament();
+      }
+    }
+  }
+
+  // Brief full-screen ADVANCED / ELIMINATED beat for the user's knockout tie
+  // before the bracket returns. Verdict is a WORD (not colour alone), with the
+  // scoreline (incl. penalties) and the round context.
+  private showKnockoutVerdict(advanced: boolean, onDone: () => void): void {
+    const cx = GAME_W / 2;
+    const cy = GAME_H / 2;
+    const col = advanced ? C.lime : C.surge;
+
+    this.add.rectangle(cx, cy, GAME_W, GAME_H, C.deep, 0.72).setDepth(60);
+    const verdict = this.add
+      .text(cx, cy - 36, advanced ? 'ADVANCED' : 'ELIMINATED', {
+        fontFamily: FONT_DISPLAY,
+        fontSize: '72px',
+        color: hex(col),
+      })
+      .setOrigin(0.5)
+      .setDepth(61)
+      .setStroke('#0e0a24', 6);
+
+    const pens = this.penResult ? `  (${this.penResult.home}-${this.penResult.away}p)` : '';
+    this.add
+      .text(cx, cy + 34, `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}${pens}`, {
+        fontFamily: FONT_DISPLAY,
+        fontSize: '26px',
+        color: CSS.light,
+      })
+      .setOrigin(0.5)
+      .setDepth(61);
+    if (this.cfg.roundLabel) {
+      this.add
+        .text(cx, cy + 74, this.cfg.roundLabel.toUpperCase(), { fontFamily: FONT_BODY, fontSize: '16px', color: CSS.mid })
+        .setOrigin(0.5)
+        .setDepth(61)
+        .setLetterSpacing(3);
+    }
+
+    if (!this.reduceMotion) {
+      verdict.setScale(0.6);
+      this.tweens.add({ targets: verdict, scale: 1, duration: 350, ease: 'Back.easeOut' });
+      if (advanced) this.advanceConfetti();
+    }
+    audio.play(advanced ? 'win' : 'whistle');
+    this.time.delayedCall(this.reduceMotion ? 1000 : 1700, onDone);
+  }
+
+  private advanceConfetti(): void {
+    const colors = [C.surge, C.cyan, C.lime, C.gold, C.flare];
+    for (let i = 0; i < 50; i++) {
+      const x = this.rng.range(0, GAME_W);
+      const col = colors[Math.floor(this.rng.range(0, colors.length))];
+      const piece = this.add.rectangle(x, this.rng.range(-40, -10), 4, 7, col).setDepth(62);
+      this.tweens.add({
+        targets: piece,
+        y: GAME_H + 40,
+        x: x + this.rng.range(-160, 160),
+        angle: this.rng.range(360, 1080),
+        alpha: { from: 1, to: 0 },
+        duration: this.rng.range(1300, 1800),
+        delay: this.rng.range(0, 400),
+        ease: 'Quad.easeIn',
+        onComplete: () => piece.destroy(),
+      });
     }
   }
 
