@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { approachVelocity, PLAYER_ACCEL, PLAYER_DECEL } from './movement';
+import { approachVelocity, stepStamina, STAMINA, PLAYER_ACCEL, PLAYER_DECEL } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
 // final velocity and the trapezoidal displacement (avg-velocity per step — the
@@ -102,5 +102,76 @@ describe('approachVelocity', () => {
   it('is a no-op for non-positive dt', () => {
     const r = approachVelocity(50, 20, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, 0);
     expect(r).toEqual({ x: 50, y: 20 });
+  });
+});
+
+describe('stepStamina', () => {
+  const dt = 1 / 60;
+
+  // helper: run for `seconds` with a fixed draining flag from a start state
+  function hold(start: { stamina: number; locked: boolean }, draining: boolean, seconds: number) {
+    let s = start.stamina;
+    let locked = start.locked;
+    const steps = Math.round(seconds / dt);
+    for (let i = 0; i < steps; i++) {
+      const r = stepStamina(s, draining && !locked && s > 0, locked, dt);
+      s = r.stamina;
+      locked = r.locked;
+    }
+    return { stamina: s, locked };
+  }
+
+  it('drains to exhaustion in ~3.3s of continuous sprint', () => {
+    // find the frame the lock first engages while holding sprint
+    let s = 1;
+    let locked = false;
+    let exhaustT = -1;
+    for (let i = 0; i < Math.round(6 / dt); i++) {
+      const canSprint = !locked && s > 0;
+      const r = stepStamina(s, canSprint, locked, dt);
+      s = r.stamina;
+      locked = r.locked;
+      if (locked && exhaustT < 0) exhaustT = (i + 1) * dt;
+    }
+    expect(exhaustT).toBeGreaterThan(3.0);
+    expect(exhaustT).toBeLessThan(3.7); // empties at ~1/0.3 ≈ 3.33s
+  });
+
+  it('recovers from empty to full in ~5s and clears the lock at unlockAt', () => {
+    const empty = { stamina: 0, locked: true };
+    const after1 = hold(empty, false, 1.0); // 1s recovery: 0.2 < unlockAt(0.3) → still locked
+    expect(after1.locked).toBe(true);
+    const after2 = hold(empty, false, 2.0); // 2s: 0.4 ≥ unlockAt → unlocked
+    expect(after2.locked).toBe(false);
+    const after5 = hold(empty, false, 5.5);
+    expect(after5.stamina).toBe(1);
+    expect(after5.locked).toBe(false);
+  });
+
+  it('never lets a sprint-empty player keep draining (hysteresis prevents stutter-sprint)', () => {
+    // exhaust, then immediately request sprint again every frame — must stay 0 & locked
+    let s = 0;
+    let locked = true;
+    for (let i = 0; i < 30; i++) {
+      const canSprint = !locked && s > 0;
+      const r = stepStamina(s, true && canSprint, locked, dt); // intent to sprint, but gated
+      s = r.stamina;
+      locked = r.locked;
+    }
+    expect(s).toBeGreaterThan(0); // it was recovering (draining gated off), not stuck at 0
+    expect(s).toBeLessThan(STAMINA.unlockAt); // still under the unlock threshold after 0.5s
+    expect(locked).toBe(true);
+  });
+
+  it('clamps to [0,1] and recovers from NaN', () => {
+    const over = stepStamina(1, false, false, dt); // already full
+    expect(over.stamina).toBeLessThanOrEqual(1);
+    const nan = stepStamina(NaN, false, false, dt);
+    expect(Number.isFinite(nan.stamina)).toBe(true);
+  });
+
+  it('is a no-op on non-positive dt', () => {
+    const r = stepStamina(0.5, true, false, 0);
+    expect(r.stamina).toBe(0.5);
   });
 });
