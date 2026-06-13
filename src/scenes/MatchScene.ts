@@ -127,6 +127,7 @@ export class MatchScene extends Phaser.Scene {
   // gfx
   private bodyGfx!: Phaser.GameObjects.Graphics; // the footballer figures (depth 10)
   private shadowGfx!: Phaser.GameObjects.Graphics; // upright drop shadows (depth 9)
+  private muteTag!: Phaser.GameObjects.Text; // shown while audio is muted
   private dyn!: Phaser.GameObjects.Graphics;
   private chargeText!: Phaser.GameObjects.Text;
   private pulse = 0; // per-frame pulse phase [0..1], reused by ring + surge fx
@@ -322,13 +323,25 @@ export class MatchScene extends Phaser.Scene {
     quit.on('pointerdown', () => this.abandon());
 
     this.add
-      .text(24, GAME_H - 22, 'Move: WASD/Arrows   ·   Shoot: hold Space   ·   Pass: J   ·   Switch: K', {
+      .text(24, GAME_H - 22, 'Move: WASD/Arrows   ·   Shoot: hold Space   ·   Pass: J   ·   Switch: K   ·   Mute: M', {
         fontFamily: FONT_BODY,
         fontSize: '14px',
         color: CSS.mid,
       })
       .setOrigin(0, 1)
       .setDepth(31);
+
+    // Persistent mute indicator — always reflects the current state (unlike a
+    // banner, it can't be clobbered by a GOAL/SURGE message).
+    this.muteTag = this.add
+      .text(GAME_W - 24, GAME_H - 22, 'AUDIO MUTED', {
+        fontFamily: FONT_DISPLAY,
+        fontSize: '15px',
+        color: CSS.flare,
+      })
+      .setOrigin(1, 1)
+      .setDepth(31)
+      .setVisible(getSave().settings.muted);
   }
 
   private spawnPlayers(): void {
@@ -395,7 +408,7 @@ export class MatchScene extends Phaser.Scene {
 
   private setupInput(): void {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,SHIFT') as Record<
+    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,M,SHIFT') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -438,6 +451,12 @@ export class MatchScene extends Phaser.Scene {
     this.keys.SPACE.on('up', () => this.releaseShot());
     this.keys.J.on('down', () => this.doPass());
     this.keys.K.on('down', () => this.manualSwitch());
+    // M = master mute (global + persisted) — handy for muting the game while
+    // recording / on a call without leaving the match.
+    this.keys.M.on('down', () => {
+      const muted = audio.toggleMute();
+      this.muteTag.setVisible(muted);
+    });
   }
 
   // --- match flow --------------------------------------------------------

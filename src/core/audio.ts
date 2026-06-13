@@ -3,7 +3,7 @@
 // SFX are short oscillator/noise bursts; the music bed is a scheduled arpeggio
 // whose tempo + volume track match momentum.
 
-import { getSave } from './save';
+import { getSave, updateSettings } from './save';
 
 type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win';
 
@@ -14,6 +14,7 @@ class AudioManager {
   private musicGain: GainNode | null = null;
   private sfxOn = true;
   private musicOn = true;
+  private muted = false; // master mute — overrides sfxOn/musicOn, silences everything
   private noiseBuf: AudioBuffer | null = null;
 
   // music state
@@ -53,12 +54,33 @@ class AudioManager {
       const s = getSave().settings;
       this.sfxOn = s.sfx;
       this.musicOn = s.music;
+      this.muted = !!s.muted;
+      // Master mute is a hard cut at the top of the graph — even already-scheduled
+      // notes/SFX route through master, so flipping this silences everything at once.
+      if (this.master && this.ctx) {
+        this.master.gain.setTargetAtTime(this.muted ? 0 : 0.9, this.ctx.currentTime, 0.05);
+      }
       if (this.musicGain && this.ctx) {
-        this.musicGain.gain.setTargetAtTime(this.musicOn ? 0.18 : 0, this.ctx.currentTime, 0.2);
+        this.musicGain.gain.setTargetAtTime(this.musicOn && !this.muted ? 0.18 : 0, this.ctx.currentTime, 0.2);
       }
     } catch {
       /* save not ready */
     }
+  }
+
+  // Flip master mute, persist it, and apply immediately. Returns the new state so
+  // callers (e.g. an in-match hotkey) can show the right label. Works from any
+  // scene because this manager is a singleton with one persistent master gain.
+  toggleMute(): boolean {
+    const next = !this.muted;
+    updateSettings({ muted: next });
+    this.resume(); // ensure the context exists / is running so the change is audible
+    this.syncSettings();
+    return next;
+  }
+
+  isMuted(): boolean {
+    return this.muted;
   }
 
   // Must be called from a user gesture (click/key) to satisfy autoplay policy.
@@ -112,7 +134,7 @@ class AudioManager {
   }
 
   play(name: SfxName): void {
-    if (!this.sfxOn) return;
+    if (!this.sfxOn || this.muted) return;
     this.init();
     if (!this.ctx) return;
     if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
@@ -178,7 +200,7 @@ class AudioManager {
   }
 
   private scheduleStep(): void {
-    if (!this.ctx || !this.musicGain || !this.musicOn) return;
+    if (!this.ctx || !this.musicGain || !this.musicOn || this.muted) return;
     const chordRoot = this.progression[Math.floor(this.step / 4) % this.progression.length];
     const arp = [0, 7, 12, 7][this.step % 4];
     const note = this.midiToFreq(chordRoot + arp + 12);
