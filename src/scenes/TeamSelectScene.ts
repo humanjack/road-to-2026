@@ -113,11 +113,11 @@ export class TeamSelectScene extends Phaser.Scene {
       const row = Math.floor(i / cols);
       const x = startX + col * (cardW + gapX);
       const y = startY + row * (cardH + gapY);
-      this.makeCard(team, x, y, cardW, cardH);
+      this.makeCard(team, x, y, cardW, cardH, col + row);
     });
   }
 
-  private makeCard(team: Team, x: number, y: number, w: number, h: number): void {
+  private makeCard(team: Team, x: number, y: number, w: number, h: number, wave: number): void {
     const primary = hexToNum(team.colors.primary);
     const confColor = hexToNum(CONFED_COLOR[team.confederation] ?? '#ffffff');
     const reduced = getSave().settings.reduceMotion;
@@ -183,6 +183,10 @@ export class TeamSelectScene extends Phaser.Scene {
         card.setScale(scale);
       } else {
         this.tweens.killTweensOf(card);
+        // snap to the resting pose so an interrupted entrance tween can't
+        // leave the card stuck low / semi-transparent
+        card.y = cy;
+        card.setAlpha(1);
         this.tweens.add({ targets: card, scale, duration: 110, ease: 'Quad.easeOut' });
       }
     };
@@ -195,6 +199,14 @@ export class TeamSelectScene extends Phaser.Scene {
     zone.on('pointerout', () => apply(this.selectedId === team.id, false));
     zone.on('pointerdown', () => this.select(team));
     this.cardObjs[team.id] = { redraw: (sel: boolean) => apply(sel, false) };
+
+    // staggered entrance: each card slides up + fades in, delayed by its
+    // diagonal position so a wave sweeps across the grid.
+    if (!reduced) {
+      card.y = cy + 20;
+      card.setAlpha(0);
+      this.tweens.add({ targets: card, y: cy, alpha: 1, duration: 320, delay: wave * 16, ease: 'Cubic.easeOut' });
+    }
   }
 
   private select(team: Team): void {
