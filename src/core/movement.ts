@@ -148,3 +148,46 @@ export function stepStamina(
   }
   return { stamina, locked, canSprint: !locked && stamina > 0 };
 }
+
+// --- dribbling & ball control ----------------------------------------------
+//
+// Carrying the ball is a trade-off, not a magnet. A carrier loses a little top
+// speed (close control), and the ball sits further ahead the faster they move —
+// so a sprint becomes a knock-on: the ball leaves the foot, you cover ground,
+// but a defender can nip in (the counterplay). Turning sharply lets the carry
+// angle lag behind the new facing for a frame or two, which reads as a real
+// touch dragging the ball around rather than a teleport.
+
+/** Top-speed multiplier while carrying the ball — close control costs a touch of pace. */
+export const DRIBBLE_SPEED_MUL = 0.9;
+/** Minimum ball-ahead distance (px): ball clears the body even at a standstill. */
+export const CARRY_BASE = 22;
+/** How far the carry distance grows from base→top speed when jogging vs sprinting. */
+const CARRY_KNOCK_JOG = 8;
+const CARRY_KNOCK_SPRINT = 30;
+
+/**
+ * How far ahead of the carrier the ball sits, given current `speed`, the
+ * carrier's `baseSpeed`, and whether they're sprinting. Grows with speed and is
+ * much larger while sprinting (the knock-on). Monotonic and bounded.
+ */
+export function carryOffset(speed: number, baseSpeed: number, sprinting: boolean): number {
+  if (!Number.isFinite(speed) || !(baseSpeed > 0)) return CARRY_BASE;
+  const t = Math.min(1, Math.max(0, speed) / baseSpeed); // 0..1 (clamped at base speed)
+  const knock = sprinting ? CARRY_KNOCK_SPRINT : CARRY_KNOCK_JOG;
+  return CARRY_BASE + t * knock;
+}
+
+/**
+ * Step the carry *angle* toward the carrier's facing. A lag factor < 1 makes a
+ * hard turn swing the ball around over a couple of frames (a touch), instead of
+ * snapping it to the new front. `lag` is the per-frame fraction (0..1].
+ */
+export function easeCarryAngle(current: number, targetFacing: number, lag: number): number {
+  if (!Number.isFinite(current)) return targetFacing;
+  // shortest-arc difference in [-PI, PI]
+  let d = (targetFacing - current) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return current + d * Math.min(1, Math.max(0, lag));
+}
