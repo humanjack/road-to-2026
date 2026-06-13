@@ -183,6 +183,10 @@ export class TeamSelectScene extends Phaser.Scene {
         card.setScale(scale);
       } else {
         this.tweens.killTweensOf(card);
+        // snap to the resting pose so an interrupted entrance tween can't
+        // leave the card stuck low / semi-transparent
+        card.y = cy;
+        card.setAlpha(1);
         this.tweens.add({ targets: card, scale, duration: 110, ease: 'Quad.easeOut' });
       }
     };
