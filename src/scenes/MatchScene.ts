@@ -108,6 +108,8 @@ export class MatchScene extends Phaser.Scene {
 
   // gfx
   private dyn!: Phaser.GameObjects.Graphics;
+  private chargeText!: Phaser.GameObjects.Text;
+  private pulse = 0; // per-frame pulse phase [0..1], reused by ring + surge fx
   private hudScore!: Phaser.GameObjects.Text;
   private hudClock!: Phaser.GameObjects.Text;
   private hudHome!: Phaser.GameObjects.Text;
@@ -163,6 +165,11 @@ export class MatchScene extends Phaser.Scene {
     this.ballTrail = [];
     this.trailGfx = this.add.graphics().setDepth(14);
     this.dyn = this.add.graphics().setDepth(20);
+    this.chargeText = this.add
+      .text(0, 0, '', { fontFamily: FONT_BODY, fontSize: '11px', color: CSS.light })
+      .setOrigin(0.5)
+      .setDepth(22)
+      .setVisible(false);
     this.vignette = this.add.graphics().setDepth(45);
     const cos = getSave().cosmetics;
     this.ballTint = ballColor(cos.ball);
@@ -1110,12 +1117,24 @@ export class MatchScene extends Phaser.Scene {
       this.vignette.fillRect(GAME_W - band, 0, band, GAME_H);
     }
 
+    // single per-frame pulse phase, reused by the possession ring + screamer
+    // zone (one sin call, per the match-effects perf budget).
+    this.pulse = this.reduceMotion ? 0 : 0.5 + 0.5 * Math.sin(this.time.now * 0.008);
+
     this.dyn.clear();
     // per-team centre marker — colour-independent team identity (accessibility)
     for (const p of this.players) {
       if (p.role === 'GK') continue;
       this.dyn.fillStyle(p.side === 'home' ? C.deep : C.white, 0.85);
       this.dyn.fillCircle(p.x, p.y, 4);
+    }
+    // possession ring on the actual ball owner (team colour), under the gold
+    // active ring so a viewer can tell who HOLDS the ball, not just who's active
+    if (this.ball.ownerIdx >= 0) {
+      const owner = this.players[this.ball.ownerIdx];
+      const ocol = owner.side === 'home' ? this.homeColor : this.awayColor;
+      this.dyn.lineStyle(3, ocol, 0.4 + 0.25 * this.pulse);
+      this.dyn.strokeCircle(owner.x, owner.y, PR + 9);
     }
     // active player ring
     const ap = this.players[this.activeIdx];
@@ -1125,15 +1144,40 @@ export class MatchScene extends Phaser.Scene {
       // small arrow under active
       this.dyn.fillStyle(C.gold, 1);
       this.dyn.fillTriangle(ap.x - 6, ap.y - PR - 12, ap.x + 6, ap.y - PR - 12, ap.x, ap.y - PR - 4);
-      // charge bar
-      if (this.charging) {
-        const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
-        this.dyn.fillStyle(C.deep, 0.8);
-        this.dyn.fillRect(ap.x - 22, ap.y + PR + 8, 44, 7);
-        this.dyn.fillStyle(charge > 0.8 ? C.surge : C.cyan, 1);
-        this.dyn.fillRect(ap.x - 21, ap.y + PR + 9, 42 * charge, 5);
-      }
     }
+    if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
+  }
+
+  // Three-zone charge bar — weak (0-40%, dim) / strong (40-80%, cyan) /
+  // screamer (80-100%, surge) — with a tick at the 0.8 threshold and a live
+  // percentage, so players learn where the SCREAMER shot begins.
+  private drawChargeBar(ap: Player): void {
+    const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
+    const bw = 50;
+    const bh = 7;
+    const bx = ap.x - bw / 2;
+    const by = ap.y + PR + 9;
+    // faint full-width track split into the three zones
+    this.dyn.fillStyle(C.dark, 0.55);
+    this.dyn.fillRect(bx, by, bw, bh);
+    // filled portion, coloured by the current zone
+    const zoneCol = charge >= 0.8 ? C.surge : charge >= 0.4 ? C.cyan : C.mid;
+    this.dyn.fillStyle(zoneCol, 1);
+    this.dyn.fillRect(bx, by, bw * charge, bh);
+    // pulsing screamer overlay once past the threshold
+    if (charge >= 0.8) {
+      this.dyn.fillStyle(C.surge, 0.35 + 0.4 * this.pulse);
+      this.dyn.fillRect(bx + bw * 0.8, by, bw * 0.2, bh);
+    }
+    // 0.8 threshold tick
+    this.dyn.fillStyle(C.light, 0.95);
+    this.dyn.fillRect(bx + bw * 0.8 - 1, by - 2, 2, bh + 4);
+    // live percentage readout
+    this.chargeText
+      .setText(`${Math.round(charge * 100)}%`)
+      .setColor(charge >= 0.8 ? CSS.surge : CSS.light)
+      .setPosition(ap.x, by - 9)
+      .setVisible(true);
   }
 
   private showBanner(text: string, color: number, ms: number): void {
