@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { approachVelocity, stepStamina, STAMINA, PLAYER_ACCEL, PLAYER_DECEL } from './movement';
+import {
+  approachVelocity,
+  stepStamina,
+  STAMINA,
+  carryOffset,
+  easeCarryAngle,
+  CARRY_BASE,
+  PLAYER_ACCEL,
+  PLAYER_DECEL,
+} from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
 // final velocity and the trapezoidal displacement (avg-velocity per step — the
@@ -173,5 +182,52 @@ describe('stepStamina', () => {
   it('is a no-op on non-positive dt', () => {
     const r = stepStamina(0.5, true, false, 0);
     expect(r.stamina).toBe(0.5);
+  });
+});
+
+describe('carryOffset', () => {
+  const BASE = 210;
+
+  it('sits the ball just ahead of the body at a standstill', () => {
+    expect(carryOffset(0, BASE, false)).toBe(CARRY_BASE);
+  });
+
+  it('grows with speed (faster dribble = ball further ahead)', () => {
+    const slow = carryOffset(60, BASE, false);
+    const fast = carryOffset(190, BASE, false);
+    expect(fast).toBeGreaterThan(slow);
+    expect(slow).toBeGreaterThanOrEqual(CARRY_BASE);
+  });
+
+  it('pushes the ball much further ahead while sprinting (knock-on)', () => {
+    const jog = carryOffset(190, BASE, false);
+    const sprint = carryOffset(190, BASE, true);
+    expect(sprint).toBeGreaterThan(jog + 10);
+  });
+
+  it('is bounded (clamps the speed term at base speed) and finite-safe', () => {
+    const huge = carryOffset(99999, BASE, true);
+    const atTop = carryOffset(BASE, BASE, true);
+    expect(huge).toBe(atTop); // clamped, no runaway offset
+    expect(carryOffset(NaN, BASE, true)).toBe(CARRY_BASE);
+    expect(carryOffset(100, 0, true)).toBe(CARRY_BASE); // bad baseSpeed
+  });
+});
+
+describe('easeCarryAngle', () => {
+  it('moves toward the target facing by the lag fraction', () => {
+    const r = easeCarryAngle(0, 1, 0.25);
+    expect(r).toBeCloseTo(0.25, 6);
+  });
+
+  it('takes the shortest arc across the ±PI wrap (no spin-around)', () => {
+    // from +3.0 rad toward -3.0 rad: shortest arc is +0.28 (through PI), not -6
+    const r = easeCarryAngle(3.0, -3.0, 0.5);
+    expect(r).toBeGreaterThan(3.0); // went the short way (increasing past PI)
+  });
+
+  it('snaps to target with lag=1 and recovers from NaN', () => {
+    expect(easeCarryAngle(0.4, 1.2, 1)).toBeCloseTo(1.2, 6);
+    expect(easeCarryAngle(NaN, 0.7, 0.3)).toBe(0.7);
   });
 });

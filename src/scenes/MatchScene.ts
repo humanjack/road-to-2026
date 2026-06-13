@@ -9,10 +9,13 @@ import { RNG, randomSeed } from '../core/rng';
 import {
   approachVelocity,
   stepStamina,
+  carryOffset,
+  easeCarryAngle,
   PLAYER_ACCEL,
   PLAYER_DECEL,
   SPRINT_SPEED_MUL,
   SPRINT_ACCEL_MUL,
+  DRIBBLE_SPEED_MUL,
 } from '../core/movement';
 import { audio } from '../core/audio';
 
@@ -62,6 +65,7 @@ interface Player {
   renderAng: number; // smoothed facing angle, lerped toward atan2(faceY, faceX)
   stamina: number; // 0..1 sprint pool (only the user-controlled player drains it)
   sprintLock: boolean; // post-exhaustion recovery lock (can't sprint until recovered)
+  sprinting: boolean; // transient: is this player sprint-moving this frame (drives ball knock-on)
 }
 
 const PR = 15; // player radius
@@ -101,6 +105,7 @@ export class MatchScene extends Phaser.Scene {
 
   private players: Player[] = [];
   private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1 };
+  private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
   private activeIdx = -1;
 
   private homeGoals = 0;
@@ -406,6 +411,7 @@ export class MatchScene extends Phaser.Scene {
       renderAng: side === 'home' ? 0 : Math.PI,
       stamina: 1,
       sprintLock: false,
+      sprinting: false,
     };
   }
 
@@ -629,6 +635,7 @@ export class MatchScene extends Phaser.Scene {
     const st = stepStamina(p.stamina, sprinting, p.sprintLock, dt);
     p.stamina = st.stamina;
     p.sprintLock = st.locked;
+    p.sprinting = sprinting; // drives the ball knock-on while carrying (read in updateBall)
     const speedMul = sprinting ? SPRINT_SPEED_MUL : 1;
     const accel = sprinting ? PLAYER_ACCEL * SPRINT_ACCEL_MUL : PLAYER_ACCEL;
     const speed = this.playerSpeed(p, 'home') * speedMul;
@@ -747,6 +754,7 @@ export class MatchScene extends Phaser.Scene {
 
     this.players.forEach((p, i) => {
       if (p.isUser) return;
+      p.sprinting = false; // AI never sprints; keep the knock-on flag clean for the carry block
       if (p.role === 'GK') {
         this.updateGK(p, dt);
         return;
@@ -879,7 +887,11 @@ export class MatchScene extends Phaser.Scene {
     const e = this.puEffects[side];
     const puBoost = e.boost > 0 ? 1.28 : 1;
     const puFreeze = e.frozen > 0 ? 0.5 : 1;
-    return base * surgeBoost * userBoost * puBoost * puFreeze;
+    // close control: carrying the ball costs a touch of top speed (the trade-off
+    // a defender exploits). O(1) owner check — no indexOf.
+    const owns = this.ball.ownerIdx >= 0 && this.players[this.ball.ownerIdx] === p;
+    const dribble = owns ? DRIBBLE_SPEED_MUL : 1;
+    return base * surgeBoost * userBoost * puBoost * puFreeze * dribble;
   }
 
   // --- physics -----------------------------------------------------------
@@ -937,14 +949,27 @@ export class MatchScene extends Phaser.Scene {
         this.ball.ownerIdx = owner;
         this.ball.vx = 0;
         this.ball.vy = 0;
+        // First touch: cushion the ball toward the receiver's facing (which, for
+        // the user, is their held movement direction) so a received pass settles
+        // under control instead of snapping from a stale carry angle.
+        const o = this.players[owner];
+        this.ballCarryAng = Math.atan2(o.faceY, o.faceX);
       }
     } else {
-      // stick ball ahead of owner
+      // carry the ball ahead of the owner: distance grows with speed (a sprint
+      // becomes a knock-on) and the carry angle eases toward facing so hard
+      // turns drag the ball around as a touch rather than teleporting it.
       const ownerIdx = this.ball.ownerIdx;
       const p = this.players[ownerIdx];
-      const fl = Math.hypot(p.faceX, p.faceY) || 1;
-      this.ball.x = p.x + (p.faceX / fl) * (PR + BR - 2);
-      this.ball.y = p.y + (p.faceY / fl) * (PR + BR - 2);
+      const facing = Math.atan2(p.faceY, p.faceX);
+      this.ballCarryAng = easeCarryAngle(this.ballCarryAng, facing, this.reduceMotion ? 1 : 0.22);
+      const speed = Math.hypot(p.vx, p.vy);
+      const off = carryOffset(speed, this.playerSpeed(p, p.side), p.sprinting);
+      this.ball.x = p.x + Math.cos(this.ballCarryAng) * off;
+      this.ball.y = p.y + Math.sin(this.ballCarryAng) * off;
+      // keep the carried ball on the pitch so a knock-on never clips a wall/net
+      this.ball.x = Phaser.Math.Clamp(this.ball.x, this.px + BR, this.px + this.pw - BR);
+      this.ball.y = Phaser.Math.Clamp(this.ball.y, this.py + BR, this.py + this.ph - BR);
       this.ball.vx = 0;
       this.ball.vy = 0;
       // Tackle: resolve ONCE against the single nearest opponent in range
