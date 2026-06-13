@@ -17,11 +17,13 @@ export class SettingsScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const s = getSave().settings;
-    let y = 180;
+    let y = 168;
     this.toggle('SOUND EFFECTS', 'sfx', s.sfx, y);
-    y += 76;
+    y += 70;
     this.toggle('MUSIC', 'music', s.music, y);
-    y += 76;
+    y += 70;
+    this.toggle('REDUCE MOTION', 'reduceMotion', s.reduceMotion, y);
+    y += 70;
     this.toggle('FICTIONALIZED NATIONS', 'fictionalNations', s.fictionalNations, y);
 
     // Legal disclaimer block

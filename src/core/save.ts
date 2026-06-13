@@ -13,7 +13,7 @@ function slotKey(slot: number): string {
 let activeSlot = -1; // lazily resolved from storage
 
 function defaultSettings(): GameSettings {
-  return { fictionalNations: false, sfx: true, music: true };
+  return { fictionalNations: false, sfx: true, music: true, reduceMotion: false };
 }
 
 function defaultStats(): CareerStats {

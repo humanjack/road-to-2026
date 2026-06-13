@@ -121,6 +121,7 @@ export interface GameSettings {
   fictionalNations: boolean;
   sfx: boolean;
   music: boolean;
+  reduceMotion: boolean; // accessibility: disables screen shake / flashes
 }
 
 export interface CareerStats {

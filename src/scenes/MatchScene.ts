@@ -109,6 +109,11 @@ export class MatchScene extends Phaser.Scene {
   private surgeBar!: Phaser.GameObjects.Graphics;
   private bannerText!: Phaser.GameObjects.Text;
   private ballGfx!: Phaser.GameObjects.Arc;
+  private trailGfx!: Phaser.GameObjects.Graphics;
+  private vignette!: Phaser.GameObjects.Graphics;
+  private ballTrail: { x: number; y: number }[] = [];
+  private reduceMotion = false;
+  private ballTint = 0xffffff;
   private finished = false;
 
   constructor() {
@@ -143,9 +148,14 @@ export class MatchScene extends Phaser.Scene {
     this.drawPitch();
     this.buildHud();
     this.spawnPlayers();
+    this.reduceMotion = getSave().settings.reduceMotion;
+    this.ballTrail = [];
+    this.trailGfx = this.add.graphics().setDepth(14);
     this.dyn = this.add.graphics().setDepth(20);
+    this.vignette = this.add.graphics().setDepth(45);
     const cos = getSave().cosmetics;
-    this.ballGfx = this.add.circle(0, 0, BR, ballColor(cos.ball)).setDepth(15).setStrokeStyle(2, 0x1a1240, 1);
+    this.ballTint = ballColor(cos.ball);
+    this.ballGfx = this.add.circle(0, 0, BR, this.ballTint).setDepth(15).setStrokeStyle(2, 0x1a1240, 1);
     this.bannerText = this.add
       .text(GAME_W / 2, GAME_H / 2, '', { fontFamily: FONT_DISPLAY, fontSize: '72px', color: CSS.white })
       .setOrigin(0.5)
@@ -522,7 +532,7 @@ export class MatchScene extends Phaser.Scene {
     const power = 460 + charge * 520;
     this.kickBall(p, (ax / len) * power, (ay / len) * power);
     if (charge > 0.8) {
-      this.cameras.main.shake(120, 0.006);
+      this.shake(120, 0.006);
       this.showBanner('SCREAMER!', C.surge, 500);
     }
   }
@@ -852,8 +862,8 @@ export class MatchScene extends Phaser.Scene {
     // reward trailing team with surge reset; scoring team modest
     if (side === 'home') this.surgeHome = 0;
     else this.surgeAway = 0;
-    this.cameras.main.shake(260, 0.012);
-    this.cameras.main.flash(180, 255, 255, 255);
+    this.shake(260, 0.012);
+    this.flash(180, 255, 255, 255);
     const col = side === 'home' ? this.homeColor : this.awayColor;
     this.showBanner('GOAL!', col, 1300);
     this.updateHud();
@@ -951,13 +961,56 @@ export class MatchScene extends Phaser.Scene {
 
   // --- rendering ---------------------------------------------------------
 
+  private shake(dur: number, intensity: number): void {
+    if (!this.reduceMotion) this.cameras.main.shake(dur, intensity);
+  }
+
+  private flash(dur: number, r: number, g: number, b: number): void {
+    if (!this.reduceMotion) this.cameras.main.flash(dur, r, g, b);
+  }
+
   private renderEntities(): void {
     for (const p of this.players) {
       p.gfx.setPosition(p.x, p.y);
     }
     this.ballGfx.setPosition(this.ball.x, this.ball.y);
 
+    // ball trail (afterimages) when the ball is loose and moving quickly
+    this.trailGfx.clear();
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
+    if (this.ball.ownerIdx < 0 && speed > 140) {
+      this.ballTrail.push({ x: this.ball.x, y: this.ball.y });
+      if (this.ballTrail.length > 8) this.ballTrail.shift();
+    } else if (this.ballTrail.length) {
+      this.ballTrail.shift();
+    }
+    this.ballTrail.forEach((t, i) => {
+      const a = (i / this.ballTrail.length) * 0.5;
+      this.trailGfx.fillStyle(this.ballTint, a);
+      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + (i / this.ballTrail.length) * 0.6));
+    });
+
+    // Surge vignette — screen edges glow in the surging team's colour
+    this.vignette.clear();
+    const surge = Math.max(this.surgeHome, this.surgeAway);
+    if (surge > 60) {
+      const col = this.surgeHome >= this.surgeAway ? this.homeColor : this.awayColor;
+      const a = ((surge - 60) / 40) * 0.22;
+      const band = 70;
+      this.vignette.fillStyle(col, a);
+      this.vignette.fillRect(0, 0, GAME_W, band);
+      this.vignette.fillRect(0, GAME_H - band, GAME_W, band);
+      this.vignette.fillRect(0, 0, band, GAME_H);
+      this.vignette.fillRect(GAME_W - band, 0, band, GAME_H);
+    }
+
     this.dyn.clear();
+    // per-team centre marker — colour-independent team identity (accessibility)
+    for (const p of this.players) {
+      if (p.role === 'GK') continue;
+      this.dyn.fillStyle(p.side === 'home' ? C.deep : C.white, 0.85);
+      this.dyn.fillCircle(p.x, p.y, 4);
+    }
     // active player ring
     const ap = this.players[this.activeIdx];
     if (ap) {
