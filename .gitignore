@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.local
+.vite
+coverage
+
+# QA / test artifacts
+slice*.png
+.playwright-mcp/
