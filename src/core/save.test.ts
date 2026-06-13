@@ -46,7 +46,7 @@ describe('save', () => {
     expect(d.version).toBe(1);
     expect(d.tournament).toBeNull();
     expect(d.coins).toBe(0);
-    expect(d.settings).toEqual({ fictionalNations: false, sfx: true, music: true, reduceMotion: false });
+    expect(d.settings).toEqual({ fictionalNations: false, sfx: true, music: true, reduceMotion: false, muted: false });
     expect(d.unlocks).toEqual([]);
     expect(d.cosmetics).toEqual({ ball: 'default', pitch: 'default' });
   });

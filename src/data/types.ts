@@ -131,6 +131,7 @@ export interface GameSettings {
   sfx: boolean;
   music: boolean;
   reduceMotion: boolean; // accessibility: disables screen shake / flashes
+  muted: boolean; // master mute — silences ALL audio (sfx + music) regardless of the above
 }
 
 export interface CareerStats {
