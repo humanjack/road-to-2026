@@ -7,6 +7,7 @@ import { createTournament } from '../core/tournament';
 import { saveTournament } from '../core/save';
 import { randomSeed, RNG } from '../core/rng';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 
 interface TeamSelectData {
   mode: 'tournament' | 'quick';
@@ -35,6 +36,7 @@ export class TeamSelectScene extends Phaser.Scene {
     this.startEnabled = false; // reset on every entry (scene instance is reused)
     this.cardObjs = {};
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
 
     this.add
       .text(40, 34, this.mode === 'quick' ? 'QUICK MATCH — PICK A NATION' : 'CHOOSE YOUR NATION', {
@@ -63,7 +65,7 @@ export class TeamSelectScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     back.on('pointerover', () => back.setColor(CSS.cyan));
     back.on('pointerout', () => back.setColor(CSS.mid));
-    back.on('pointerdown', () => this.scene.start('Menu'));
+    back.on('pointerdown', () => transitionTo(this, 'Menu'));
   }
 
   private buildDifficulty(): void {
@@ -235,7 +237,7 @@ export class TeamSelectScene extends Phaser.Scene {
       const seed = randomSeed();
       const state = createTournament(TEAMS, this.selectedId, this.difficulty, seed);
       saveTournament(state);
-      this.scene.start('Tournament');
+      transitionTo(this, 'Tournament');
     }
   }
 }

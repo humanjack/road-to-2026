@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 import { getSave } from '../core/save';
 import { drawTrophy } from '../ui/trophy';
 import type { MatchStats } from '../data/types';
@@ -39,6 +40,7 @@ export class ResultScene extends Phaser.Scene {
 
   create(data: ResultData): void {
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
     const cx = GAME_W / 2;
     const accent = data.accent ?? C.gold;
 
@@ -89,7 +91,7 @@ export class ResultScene extends Phaser.Scene {
     btn.on('pointerdown', () => {
       audio.resume();
       audio.play('ui');
-      this.scene.start(data.nextScene);
+      transitionTo(this, data.nextScene);
     });
   }
 

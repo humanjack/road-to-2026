@@ -3,6 +3,7 @@ import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
 import { getSave, updateSettings, clearSave } from '../core/save';
 import type { GameSettings } from '../data/types';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 
 export class SettingsScene extends Phaser.Scene {
   constructor() {
@@ -11,6 +12,7 @@ export class SettingsScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
 
     this.add
       .text(GAME_W / 2, 70, 'SETTINGS', { fontFamily: FONT_DISPLAY, fontSize: '40px', color: CSS.light })
@@ -51,7 +53,7 @@ export class SettingsScene extends Phaser.Scene {
       audio.syncSettings();
       this.scene.restart();
     });
-    this.button(GAME_W / 2 + 170, GAME_H - 60, 'BACK', C.surge, () => this.scene.start('Menu'));
+    this.button(GAME_W / 2 + 170, GAME_H - 60, 'BACK', C.surge, () => transitionTo(this, 'Menu'));
   }
 
   private toggle(label: string, key: keyof GameSettings, value: boolean, y: number): void {

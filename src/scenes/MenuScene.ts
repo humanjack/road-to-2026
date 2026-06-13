@@ -5,6 +5,7 @@ import { audio } from '../core/audio';
 import { TEAMS } from '../data/teams';
 import { WORLD_ELEVEN } from '../data/extras';
 import { RNG, randomSeed } from '../core/rng';
+import { transitionTo } from '../ui/transitions';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -63,7 +64,7 @@ export class MenuScene extends Phaser.Scene {
 
     const buttons: { label: string; onClick: () => void; primary?: boolean }[] = [];
     if (continueAvailable) {
-      buttons.push({ label: 'CONTINUE TOURNAMENT', primary: true, onClick: () => this.scene.start('Tournament') });
+      buttons.push({ label: 'CONTINUE TOURNAMENT', primary: true, onClick: () => transitionTo(this, 'Tournament') });
       buttons.push({ label: 'NEW TOURNAMENT', onClick: () => this.startTeamSelect() });
     } else {
       buttons.push({ label: 'NEW TOURNAMENT', primary: true, onClick: () => this.startTeamSelect() });
@@ -77,9 +78,9 @@ export class MenuScene extends Phaser.Scene {
     }
 
     // top-right utility buttons
-    this.cornerButton(GAME_W - 90, 40, 'SETTINGS', () => this.scene.start('Settings'));
-    this.cornerButton(GAME_W - 230, 40, 'SHOP', () => this.scene.start('Shop'));
-    this.cornerButton(GAME_W - 370, 40, 'SAVES', () => this.scene.start('SlotSelect'));
+    this.cornerButton(GAME_W - 90, 40, 'SETTINGS', () => transitionTo(this, 'Settings'));
+    this.cornerButton(GAME_W - 230, 40, 'SHOP', () => transitionTo(this, 'Shop'));
+    this.cornerButton(GAME_W - 370, 40, 'SAVES', () => transitionTo(this, 'SlotSelect'));
     if (isUnlocked(WORLD_ELEVEN.id)) {
       this.cornerButton(GAME_W - 510, 40, 'WORLD XI', () => this.launchWorldEleven());
     }
@@ -132,7 +133,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private startTeamSelect(mode: 'tournament' | 'quick' = 'tournament'): void {
-    this.scene.start('TeamSelect', { mode });
+    transitionTo(this, 'TeamSelect', { mode });
   }
 
   // World Eleven mode: play the unlocked all-star squad vs a random nation.

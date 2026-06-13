@@ -4,6 +4,7 @@ import { getSave, isUnlocked, unlockItem, spendCoins, equipCosmetic } from '../c
 import { SHOP_ITEMS, ballColor, type ShopItem } from '../data/extras';
 import type { Cosmetics } from '../data/types';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 
 export class ShopScene extends Phaser.Scene {
   private coinsText!: Phaser.GameObjects.Text;
@@ -14,6 +15,7 @@ export class ShopScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
     this.add
       .text(GAME_W / 2, 56, 'AURORA SHOP', { fontFamily: FONT_DISPLAY, fontSize: '40px', color: CSS.gold })
       .setOrigin(0.5);
@@ -56,7 +58,7 @@ export class ShopScene extends Phaser.Scene {
     back.on('pointerdown', () => {
       audio.resume();
       audio.play('ui');
-      this.scene.start('Menu');
+      transitionTo(this, 'Menu');
     });
   }
 

@@ -25,6 +25,7 @@ import {
 } from '../core/flow';
 import { simulateMatch } from '../core/simMatch';
 import { audio } from '../core/audio';
+import { transitionTo, fadeInScene } from '../ui/transitions';
 
 const map = teamMapOf(TEAMS);
 
@@ -60,6 +61,7 @@ export class TournamentScene extends Phaser.Scene {
     }
 
     this.cameras.main.setBackgroundColor(C.indigo);
+    fadeInScene(this);
     this.render();
   }
 
@@ -172,7 +174,7 @@ export class TournamentScene extends Phaser.Scene {
       // clear so "Continue" doesn't resume a finished cup
       saveTournament(null);
     }
-    this.scene.start('Result', {
+    transitionTo(this, 'Result', {
       title: userWon ? 'CHAMPIONS!' : 'CUP COMPLETE',
       subtitle: champ ? `${displayName(champ)} lift the Aurora Sphere` : 'The Globe Cup is decided',
       lines: userWon
@@ -209,7 +211,7 @@ export class TournamentScene extends Phaser.Scene {
       .text(28, 36, '‹ MENU', { fontFamily: FONT_DISPLAY, fontSize: '18px', color: CSS.mid })
       .setOrigin(0, 0.5)
       .setInteractive({ useHandCursor: true });
-    menu.on('pointerdown', () => this.scene.start('Menu'));
+    menu.on('pointerdown', () => transitionTo(this, 'Menu'));
   }
 
   private renderGroups(): void {
