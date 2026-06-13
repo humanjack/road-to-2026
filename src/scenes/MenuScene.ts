@@ -13,6 +13,12 @@ export class MenuScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor(C.indigo);
+    // Soft fade + slight zoom-out on entry (skipped under reduceMotion).
+    if (!getSave().settings.reduceMotion) {
+      this.cameras.main.fadeIn(600, 14, 10, 36);
+      this.cameras.main.setZoom(1.08);
+      this.cameras.main.zoomTo(1, 700, 'Quad.easeOut');
+    }
     this.drawBackdrop();
 
     const cx = GAME_W / 2;
@@ -166,24 +172,42 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private drawSphere(x: number, y: number): void {
-    const g = this.add.graphics();
-    g.fillStyle(C.cyan, 0.12);
-    g.fillCircle(x, y, 60);
-    g.lineStyle(2, C.cyan, 0.5);
-    g.strokeCircle(x, y, 60);
-    g.fillStyle(C.gold, 1);
-    g.fillCircle(x, y, 42);
-    g.fillStyle(0xffe39a, 0.85);
-    g.fillCircle(x - 12, y - 12, 24);
-    // aurora arcs
-    g.lineStyle(4, C.lime, 0.6);
-    g.beginPath();
-    g.arc(x, y, 78, Phaser.Math.DegToRad(200), Phaser.Math.DegToRad(340));
-    g.strokePath();
-    g.lineStyle(3, C.surge, 0.5);
-    g.beginPath();
-    g.arc(x, y, 88, Phaser.Math.DegToRad(205), Phaser.Math.DegToRad(335));
-    g.strokePath();
+    const rm = getSave().settings.reduceMotion;
+
+    // Cyan halo (breathes in opacity).
+    const halo = this.add.graphics();
+    halo.fillStyle(C.cyan, 0.12);
+    halo.fillCircle(x, y, 60);
+    halo.lineStyle(2, C.cyan, 0.5);
+    halo.strokeCircle(x, y, 60);
+
+    // Aurora arcs in a container centred on the sphere (slowly orbit).
+    const arcs = this.add.container(x, y);
+    const ag = this.add.graphics();
+    ag.lineStyle(4, C.lime, 0.6);
+    ag.beginPath();
+    ag.arc(0, 0, 78, Phaser.Math.DegToRad(200), Phaser.Math.DegToRad(340));
+    ag.strokePath();
+    ag.lineStyle(3, C.surge, 0.5);
+    ag.beginPath();
+    ag.arc(0, 0, 88, Phaser.Math.DegToRad(205), Phaser.Math.DegToRad(335));
+    ag.strokePath();
+    arcs.add(ag);
+
+    // Gold core + highlight (gently pulses).
+    const core = this.add.container(x, y);
+    const cg = this.add.graphics();
+    cg.fillStyle(C.gold, 1);
+    cg.fillCircle(0, 0, 42);
+    cg.fillStyle(0xffe39a, 0.85);
+    cg.fillCircle(-12, -12, 24);
+    core.add(cg);
+
+    if (!rm) {
+      this.tweens.add({ targets: arcs, rotation: Math.PI * 2, duration: 16000, repeat: -1, ease: 'Linear' });
+      this.tweens.add({ targets: core, scale: 1.06, duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      this.tweens.add({ targets: halo, alpha: 0.5, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    }
   }
 
   private makeButton(x: number, y: number, label: string, onClick: () => void, primary = false): void {
