@@ -169,7 +169,7 @@ export class TournamentScene extends Phaser.Scene {
     const userWon = this.state.championId === this.state.userTeamId;
     if (this.state.phase === 'done' && !this.awarded) {
       this.awarded = true; // idempotent: award exactly once per completed cup
-      recordTournament(userWon);
+      recordTournament(userWon, userWon ? this.state.userTeamId : undefined);
       addCoins(userWon ? 500 : 120);
       // clear so "Continue" doesn't resume a finished cup
       saveTournament(null);

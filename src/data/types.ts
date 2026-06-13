@@ -138,4 +138,5 @@ export interface CareerStats {
   tournamentsWon: number;
   matchesPlayed: number;
   goalsScored: number;
+  lastChampionTeamId?: string; // the nation the user last won the cup with
 }
