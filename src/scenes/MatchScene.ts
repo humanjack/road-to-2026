@@ -1160,14 +1160,68 @@ export class MatchScene extends Phaser.Scene {
       this.state = 'pens';
       this.time.delayedCall(1400, () => this.runPenalties());
     } else {
+      // a decided match earns a short victory beat before the hand-off
+      if (this.homeGoals !== this.awayGoals && !this.reduceMotion) {
+        this.victoryZoomSpotlight();
+      }
       this.time.delayedCall(1800, () => this.finishMatch());
     }
   }
 
+  // Tighten the camera on a soft pulsing spotlight at pitch centre to honour
+  // the winning moment before we cut to the result. Motion-only; both the zoom
+  // and the spotlight live on the doomed MatchScene, so the next scene's fresh
+  // camera starts clean.
+  private victoryZoomSpotlight(): void {
+    this.time.delayedCall(250, () => {
+      if (this.finished) return;
+      this.cameras.main.zoomTo(1.18, 1000, 'Quad.easeOut');
+      const spot = this.add.container(this.px + this.pw / 2, this.py + this.ph / 2).setDepth(46);
+      const sg = this.add.graphics();
+      for (let i = 9; i >= 1; i--) {
+        sg.fillStyle(0xffffff, 0.05);
+        sg.fillCircle(0, 0, i * 20);
+      }
+      spot.add(sg);
+      this.tweens.add({
+        targets: spot,
+        scale: 1.14,
+        duration: 700,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+    });
+  }
+
   private runPenalties(): void {
     const pens = penaltyShootout(this.home, this.away, this.rng);
-    this.showBanner(`PENALTIES  ${pens.home}-${pens.away}`, C.surge, 2200);
     this.penResult = pens;
+
+    if (this.reduceMotion) {
+      this.showBanner(`PENALTIES  ${pens.home}-${pens.away}`, C.surge, 2200);
+      this.time.delayedCall(2400, () => this.finishMatch());
+      return;
+    }
+
+    // Dramatic reveal: the PENALTIES title slides up from below, then the
+    // resolved score drops in from above and bounces.
+    const cx = GAME_W / 2;
+    const cy = GAME_H / 2;
+    const title = this.add
+      .text(cx, GAME_H + 60, 'PENALTIES', { fontFamily: FONT_DISPLAY, fontSize: '54px', color: CSS.surge })
+      .setOrigin(0.5)
+      .setDepth(51)
+      .setStroke('#0e0a24', 6);
+    this.tweens.add({ targets: title, y: cy - 64, duration: 600, ease: 'Back.easeOut' });
+    this.time.delayedCall(700, () => {
+      const score = this.add
+        .text(cx, -60, `${pens.home} - ${pens.away}`, { fontFamily: FONT_DISPLAY, fontSize: '78px', color: CSS.gold })
+        .setOrigin(0.5)
+        .setDepth(51)
+        .setStroke('#0e0a24', 6);
+      this.tweens.add({ targets: score, y: cy + 26, duration: 650, ease: 'Bounce.easeOut' });
+    });
     this.time.delayedCall(2400, () => this.finishMatch());
   }
 
