@@ -21,6 +21,13 @@ export interface MatchInit {
 
 type Side = 'home' | 'away';
 type Role = 'GK' | 'DEF' | 'MID' | 'FWD';
+type PowerType = 'boost' | 'freeze' | 'magnet';
+
+const POWERUPS: Record<PowerType, { label: string; color: number; icon: string; dur: number }> = {
+  boost: { label: 'SURGE BOOST', color: 0x7be83c, icon: '»', dur: 5 },
+  freeze: { label: 'DEEP FREEZE', color: 0x19d3f0, icon: '*', dur: 4 },
+  magnet: { label: 'BALL MAGNET', color: 0xff2e88, icon: 'O', dur: 6 },
+};
 
 interface Player {
   side: Side;
@@ -72,6 +79,15 @@ export class MatchScene extends Phaser.Scene {
   private surgeHome = 0;
   private surgeAway = 0;
 
+  // power-ups
+  private powerups: { x: number; y: number; type: PowerType; gfx: Phaser.GameObjects.Container }[] = [];
+  private puSpawnTimer = 6;
+  private puEffects: Record<Side, { boost: number; magnet: number; frozen: number }> = {
+    home: { boost: 0, magnet: 0, frozen: 0 },
+    away: { boost: 0, magnet: 0, frozen: 0 },
+  };
+  private puHud!: Phaser.GameObjects.Text;
+
   private elapsed = 0;
   private duration = 120;
   private state: 'kickoff' | 'play' | 'goal' | 'fulltime' | 'pens' = 'kickoff';
@@ -120,6 +136,9 @@ export class MatchScene extends Phaser.Scene {
     this.surgeAway = 0;
     this.elapsed = 0;
     this.players = [];
+    this.powerups = [];
+    this.puSpawnTimer = 6;
+    this.puEffects = { home: { boost: 0, magnet: 0, frozen: 0 }, away: { boost: 0, magnet: 0, frozen: 0 } };
 
     this.drawPitch();
     this.buildHud();
@@ -211,6 +230,10 @@ export class MatchScene extends Phaser.Scene {
     cg.fillRoundedRect(GAME_W / 2 + 210, 30, 14, 32, 4);
 
     this.surgeBar = this.add.graphics().setDepth(31);
+    this.puHud = this.add
+      .text(GAME_W / 2, 98, '', { fontFamily: FONT_DISPLAY, fontSize: '14px', color: CSS.lime })
+      .setOrigin(0.5)
+      .setDepth(31);
 
     // pause / quit
     const quit = this.add
@@ -382,6 +405,7 @@ export class MatchScene extends Phaser.Scene {
     this.integratePlayers(dt);
     this.updateBall(dt);
     this.updateSurge(dt);
+    this.updatePowerups(dt);
     this.renderEntities();
     this.updateHud();
 
@@ -686,7 +710,10 @@ export class MatchScene extends Phaser.Scene {
     const surge = side === 'home' ? this.surgeHome : this.surgeAway;
     const surgeBoost = surge >= 100 ? 1.18 : 1;
     const userBoost = p.isUser ? this.diff.userBoost : 1;
-    return base * surgeBoost * userBoost;
+    const e = this.puEffects[side];
+    const puBoost = e.boost > 0 ? 1.28 : 1;
+    const puFreeze = e.frozen > 0 ? 0.5 : 1;
+    return base * surgeBoost * userBoost * puBoost * puFreeze;
   }
 
   // --- physics -----------------------------------------------------------
@@ -731,7 +758,8 @@ export class MatchScene extends Phaser.Scene {
       this.players.forEach((p, i) => {
         if (this.kickCooldown > 0 && i === this.lastKickIdx) return;
         const d = dist(p.x, p.y, this.ball.x, this.ball.y);
-        if (d < PR + BR + 6 && d < bd) {
+        const reach = PR + BR + 6 + (this.puEffects[p.side].magnet > 0 ? 16 : 0);
+        if (d < reach && d < bd) {
           bd = d;
           owner = i;
         }
@@ -863,6 +891,64 @@ export class MatchScene extends Phaser.Scene {
     this.surgeAway = Math.min(100, this.surgeAway + (6 + awayTrail * 7) * dt);
   }
 
+  // --- power-ups ---------------------------------------------------------
+
+  private updatePowerups(dt: number): void {
+    // decay active effects
+    for (const side of ['home', 'away'] as Side[]) {
+      const e = this.puEffects[side];
+      e.boost = Math.max(0, e.boost - dt);
+      e.magnet = Math.max(0, e.magnet - dt);
+      e.frozen = Math.max(0, e.frozen - dt);
+    }
+    // spawn cadence
+    this.puSpawnTimer -= dt;
+    if (this.puSpawnTimer <= 0 && this.powerups.length < 2) {
+      this.spawnPowerup();
+      this.puSpawnTimer = this.rng.range(11, 16);
+    }
+    // spin + collision
+    for (let i = this.powerups.length - 1; i >= 0; i--) {
+      const pu = this.powerups[i];
+      pu.gfx.rotation += dt * 1.6;
+      for (const p of this.players) {
+        if (dist(p.x, p.y, pu.x, pu.y) < PR + 16) {
+          this.collectPowerup(i, p.side);
+          break;
+        }
+      }
+    }
+  }
+
+  private spawnPowerup(): void {
+    const type = this.rng.pick(['boost', 'freeze', 'magnet'] as PowerType[]);
+    const x = this.px + this.pw * this.rng.range(0.28, 0.72);
+    const y = this.py + this.ph * this.rng.range(0.2, 0.8);
+    const cfg = POWERUPS[type];
+    const c = this.add.container(x, y).setDepth(12);
+    const ring = this.add.circle(0, 0, 17, cfg.color, 0.22).setStrokeStyle(3, cfg.color, 1);
+    const icon = this.add
+      .text(0, 0, cfg.icon, { fontFamily: FONT_DISPLAY, fontSize: '20px', color: hex(cfg.color) })
+      .setOrigin(0.5);
+    c.add([ring, icon]);
+    this.tweens.add({ targets: c, scale: 1.15, duration: 500, yoyo: true, repeat: -1 });
+    this.powerups.push({ x, y, type, gfx: c });
+  }
+
+  private collectPowerup(index: number, side: Side): void {
+    const pu = this.powerups[index];
+    const cfg = POWERUPS[pu.type];
+    const other: Side = side === 'home' ? 'away' : 'home';
+    if (pu.type === 'boost') this.puEffects[side].boost = cfg.dur;
+    else if (pu.type === 'magnet') this.puEffects[side].magnet = cfg.dur;
+    else this.puEffects[other].frozen = cfg.dur; // freeze the opponents
+    const teamCode = side === 'home' ? this.home.code : this.away.code;
+    this.showBanner(`${teamCode}: ${cfg.label}`, cfg.color, 900);
+    audio.play('surge');
+    pu.gfx.destroy();
+    this.powerups.splice(index, 1);
+  }
+
   // --- rendering ---------------------------------------------------------
 
   private renderEntities(): void {
@@ -915,6 +1001,19 @@ export class MatchScene extends Phaser.Scene {
     this.surgeBar.fillRect(GAME_W / 2, y + 1, (this.surgeAway / 100) * (w / 2), 6);
     if (this.surgeHome >= 100) this.tagSurge('home');
     if (this.surgeAway >= 100) this.tagSurge('away');
+
+    // active power-up indicators
+    const parts: string[] = [];
+    for (const side of ['home', 'away'] as Side[]) {
+      const e = this.puEffects[side];
+      const code = side === 'home' ? this.home.code : this.away.code;
+      const b: string[] = [];
+      if (e.boost > 0) b.push('BOOST');
+      if (e.magnet > 0) b.push('MAGNET');
+      if (e.frozen > 0) b.push('FROZEN');
+      if (b.length) parts.push(`${code} ${b.join('/')}`);
+    }
+    this.puHud.setText(parts.join('   ·   '));
   }
 
   private surgeTagged: Record<Side, boolean> = { home: false, away: false };
