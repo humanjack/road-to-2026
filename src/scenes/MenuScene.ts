@@ -8,6 +8,7 @@ import { displayName } from '../data/names';
 import { RNG, randomSeed } from '../core/rng';
 import { transitionTo } from '../ui/transitions';
 import { drawTrophy } from '../ui/trophy';
+import { drawCurrencyBadge, careerRank } from '../ui/hud';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -91,13 +92,7 @@ export class MenuScene extends Phaser.Scene {
     }
 
     const save = getSave();
-    this.add
-      .text(GAME_W - 24, GAME_H - 20, `Coins ${save.coins}  ·  Cups ${save.stats.tournamentsWon}`, {
-        fontFamily: FONT_BODY,
-        fontSize: '16px',
-        color: CSS.mid,
-      })
-      .setOrigin(1, 1);
+    this.drawProgressBadges(save.coins, save.stats.tournamentsWon);
 
     this.add
       .text(24, GAME_H - 36, '48 nations · one surge · lift the sphere', {
@@ -175,6 +170,26 @@ export class MenuScene extends Phaser.Scene {
         g.fillCircle(40 + col * 14, 40 + r * 14, 2.4);
       }
     }
+  }
+
+  private drawProgressBadges(coins: number, cups: number): void {
+    const animate = !getSave().settings.reduceMotion;
+    const rx = GAME_W - 24;
+    drawCurrencyBadge(this, rx, GAME_H - 48, 'coins', coins, animate);
+    drawCurrencyBadge(this, rx, GAME_H - 22, 'cups', cups, animate);
+
+    // career-rank pill above the currencies
+    const rank = careerRank(cups);
+    const probe = this.add.text(0, -200, rank.label, { fontFamily: FONT_DISPLAY, fontSize: '12px' });
+    const pw = Math.ceil(probe.width) + 22;
+    probe.destroy();
+    const g = this.add.graphics();
+    g.fillStyle(rank.color, 1);
+    g.fillRoundedRect(rx - pw, GAME_H - 90, pw, 20, 10);
+    this.add
+      .text(rx - pw / 2, GAME_H - 80, rank.label, { fontFamily: FONT_DISPLAY, fontSize: '12px', color: CSS.deep })
+      .setOrigin(0.5)
+      .setLetterSpacing(1);
   }
 
   private drawChampionShelf(): void {
