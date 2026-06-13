@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
 import { displayName } from '../data/names';
 import { resolveTeam, ballColor } from '../data/extras';
-import type { Team, MatchResult, Difficulty } from '../data/types';
+import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
 import { recordMatch, getSave } from '../core/save';
 import { penaltyShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
@@ -80,6 +80,11 @@ export class MatchScene extends Phaser.Scene {
   private surgeHome = 0;
   private surgeAway = 0;
 
+  // post-match stats (live matches only)
+  private shots: Record<Side, number> = { home: 0, away: 0 };
+  private onTarget: Record<Side, number> = { home: 0, away: 0 };
+  private possSec: Record<Side, number> = { home: 0, away: 0 };
+
   // power-ups
   private powerups: { x: number; y: number; type: PowerType; gfx: Phaser.GameObjects.Container }[] = [];
   private puSpawnTimer = 6;
@@ -140,6 +145,9 @@ export class MatchScene extends Phaser.Scene {
     this.awayGoals = 0;
     this.surgeHome = 0;
     this.surgeAway = 0;
+    this.shots = { home: 0, away: 0 };
+    this.onTarget = { home: 0, away: 0 };
+    this.possSec = { home: 0, away: 0 };
     this.elapsed = 0;
     this.players = [];
     this.powerups = [];
@@ -531,11 +539,29 @@ export class MatchScene extends Phaser.Scene {
     }
     const len = Math.hypot(ax, ay) || 1;
     const power = 460 + charge * 520;
-    this.kickBall(p, (ax / len) * power, (ay / len) * power);
+    const vx = (ax / len) * power;
+    const vy = (ay / len) * power;
+    this.registerShot(p.side, p.x, p.y, vx, vy);
+    this.kickBall(p, vx, vy);
     if (charge > 0.8) {
       this.shake(120, 0.006);
       this.showBanner('SCREAMER!', C.surge, 500);
     }
+  }
+
+  // Tally a shot and, by projecting its straight-line path to the opponent
+  // goal line, whether it was on target (within the goal mouth). A heuristic —
+  // drag bends the real path — but a fair shots/on-target ratio for the result.
+  private registerShot(side: Side, fromX: number, fromY: number, vx: number, vy: number): void {
+    this.shots[side]++;
+    const goalX = side === 'home' ? this.px + this.pw : this.px;
+    const towardGoal = side === 'home' ? vx > 0 : vx < 0;
+    if (!towardGoal) return;
+    const t = (goalX - fromX) / vx;
+    if (t <= 0) return;
+    const yAtGoal = fromY + vy * t;
+    const gy0 = this.py + this.ph / 2 - this.goalH / 2;
+    if (yAtGoal >= gy0 && yAtGoal <= gy0 + this.goalH) this.onTarget[side]++;
   }
 
   private doPass(): void {
@@ -664,7 +690,10 @@ export class MatchScene extends Phaser.Scene {
     const dy = ty - p.y;
     const len = Math.hypot(dx, dy) || 1;
     const power = 720 + this.rng.range(0, 140);
-    this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    const vx = (dx / len) * power;
+    const vy = (dy / len) * power;
+    this.registerShot(p.side, p.x, p.y, vx, vy);
+    this.kickBall(p, vx, vy);
   }
 
   private aiPassToTeammate(p: Player): void {
@@ -761,6 +790,9 @@ export class MatchScene extends Phaser.Scene {
 
   private updateBall(dt: number): void {
     if (this.kickCooldown > 0) this.kickCooldown -= dt;
+
+    // possession clock (only ticks while a side actually holds the ball)
+    if (this.ball.ownerIdx >= 0) this.possSec[this.players[this.ball.ownerIdx].side] += dt;
 
     // possession: closest player within collect radius
     if (this.ball.ownerIdx < 0) {
@@ -1238,6 +1270,14 @@ export class MatchScene extends Phaser.Scene {
     else if (this.awayGoals > this.homeGoals) winnerId = this.away.id;
     else if (knockout && this.penResult) winnerId = this.penResult.home > this.penResult.away ? this.home.id : this.away.id;
 
+    const totalPoss = this.possSec.home + this.possSec.away;
+    const homePct = totalPoss > 0 ? Math.round((this.possSec.home / totalPoss) * 100) : 50;
+    const stats: MatchStats = {
+      shots: { ...this.shots },
+      onTarget: { ...this.onTarget },
+      possession: { home: homePct, away: 100 - homePct },
+    };
+
     const result: MatchResult = {
       homeId: this.home.id,
       awayId: this.away.id,
@@ -1247,6 +1287,7 @@ export class MatchScene extends Phaser.Scene {
       winnerId,
       penalties: this.penResult,
       userInvolved: true,
+      stats,
     };
 
     const userGoals = this.cfg.userTeamId === this.home.id ? this.homeGoals : this.awayGoals;
@@ -1269,6 +1310,9 @@ export class MatchScene extends Phaser.Scene {
         homeGoals: this.homeGoals,
         awayGoals: this.awayGoals,
         userIsHome: this.cfg.userTeamId === this.home.id,
+        homeColor: this.homeColor,
+        awayColor: this.awayColor,
+        stats: result.stats,
         nextScene: 'Menu',
         buttonLabel: 'BACK TO MENU',
       });

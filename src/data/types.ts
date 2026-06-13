@@ -40,6 +40,14 @@ export interface Team {
 
 export type Difficulty = 'casual' | 'pro' | 'legend';
 
+// Per-side match stats, tracked only for live (user-played) matches and shown
+// on the result screen. Optional everywhere — simulated matches don't fill it.
+export interface MatchStats {
+  shots: { home: number; away: number };
+  onTarget: { home: number; away: number };
+  possession: { home: number; away: number }; // percentages, sum to 100
+}
+
 export interface MatchResult {
   homeId: string;
   awayId: string;
@@ -49,6 +57,7 @@ export interface MatchResult {
   winnerId?: string; // set for knockout matches (after penalties if needed)
   penalties?: { home: number; away: number };
   userInvolved: boolean;
+  stats?: MatchStats;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,9 @@
 import Phaser from 'phaser';
-import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H } from '../ui/theme';
+import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
 import { audio } from '../core/audio';
 import { getSave } from '../core/save';
 import { drawTrophy } from '../ui/trophy';
+import type { MatchStats } from '../data/types';
 
 // Explicit, typed match outcome — the single source of truth for celebration
 // tiers (trophy size, confetti, count-up tint). Never infer this from `accent`:
@@ -26,6 +27,9 @@ export interface ResultData {
   homeGoals?: number;
   awayGoals?: number;
   userIsHome?: boolean;
+  homeColor?: number;
+  awayColor?: number;
+  stats?: MatchStats;
 }
 
 export class ResultScene extends Phaser.Scene {
@@ -66,6 +70,8 @@ export class ResultScene extends Phaser.Scene {
       this.add.text(cx, y, line, { fontFamily: FONT_BODY, fontSize: '18px', color: CSS.mid }).setOrigin(0.5);
       y += 30;
     }
+
+    if (data.stats) this.drawStatBars(cx, data.stats, data);
 
     const label = data.buttonLabel ?? 'CONTINUE';
     const btn = this.add
@@ -169,6 +175,48 @@ export class ResultScene extends Phaser.Scene {
         .setOrigin(0, 0.5)
         .setDepth(2)
         .setLetterSpacing(2);
+    }
+  }
+
+  // Three diverging stat rows (Shots / On Target / Possession). Each side's bar
+  // is its share of the row total, growing out from centre; numeric values sit
+  // at the bar tips so meaning never relies on colour alone.
+  private drawStatBars(cx: number, stats: MatchStats, data: ResultData): void {
+    const homeCol = data.homeColor ?? C.surge;
+    const awayCol = data.awayColor ?? C.cyan;
+    const rows: { label: string; h: number; a: number; pct?: boolean }[] = [
+      { label: 'SHOTS', h: stats.shots.home, a: stats.shots.away },
+      { label: 'ON TARGET', h: stats.onTarget.home, a: stats.onTarget.away },
+      { label: 'POSSESSION', h: stats.possession.home, a: stats.possession.away, pct: true },
+    ];
+    const maxW = 220;
+    const barH = 14;
+    const reduced = getSave().settings.reduceMotion;
+    let y = 452;
+    for (const r of rows) {
+      const total = r.pct ? 100 : r.h + r.a;
+      const hw = total > 0 ? (r.h / total) * maxW : 0;
+      const aw = total > 0 ? (r.a / total) * maxW : 0;
+
+      this.add.text(cx, y - 20, r.label, { fontFamily: FONT_BODY, fontSize: '13px', color: CSS.mid }).setOrigin(0.5).setLetterSpacing(2);
+      // faint full-width tracks
+      const tg = this.add.graphics();
+      tg.fillStyle(C.dark, 0.5);
+      tg.fillRect(cx - 3 - maxW, y - barH / 2, maxW, barH);
+      tg.fillRect(cx + 3, y - barH / 2, maxW, barH);
+
+      const homeBar = this.add.rectangle(cx - 3, y, hw, barH, homeCol).setOrigin(1, 0.5);
+      const awayBar = this.add.rectangle(cx + 3, y, aw, barH, awayCol).setOrigin(0, 0.5);
+      const suffix = r.pct ? '%' : '';
+      this.add.text(cx - 3 - maxW - 14, y, `${r.h}${suffix}`, { fontFamily: FONT_DISPLAY, fontSize: '18px', color: hex(homeCol) }).setOrigin(1, 0.5);
+      this.add.text(cx + 3 + maxW + 14, y, `${r.a}${suffix}`, { fontFamily: FONT_DISPLAY, fontSize: '18px', color: hex(awayCol) }).setOrigin(0, 0.5);
+
+      if (!reduced) {
+        homeBar.scaleX = 0;
+        awayBar.scaleX = 0;
+        this.tweens.add({ targets: [homeBar, awayBar], scaleX: 1, duration: 600, ease: 'Quad.easeOut' });
+      }
+      y += 44;
     }
   }
 
