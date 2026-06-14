@@ -14,6 +14,9 @@ import {
   ballExposure,
   POKE_REACH,
   SLIDE_REACH,
+  choosePassTarget,
+  PASS_CONE,
+  type PassMate,
   PLAYER_ACCEL,
   PLAYER_DECEL,
 } from './movement';
@@ -319,5 +322,39 @@ describe('ballExposure', () => {
   it('clamps to [0,1]', () => {
     expect(ballExposure(0)).toBe(0);
     expect(ballExposure(9999)).toBe(1);
+  });
+});
+
+describe('choosePassTarget', () => {
+  // three mates: one up-right, one straight right, one down-left
+  const mates: PassMate[] = [
+    { x: 100, y: -100, vx: 0, vy: 0 }, // up-right (~ -45°)
+    { x: 200, y: 0, vx: 0, vy: 0 }, // straight right
+    { x: -120, y: 120, vx: 0, vy: 0 }, // behind / down-left
+  ];
+
+  it('picks the mate aligned with the aim direction', () => {
+    // aim up-right → should pick mate 0, not the straight-ahead mate
+    const i = choosePassTarget(0, 0, 1, -1, mates, PASS_CONE.full, 1);
+    expect(i).toBe(0);
+    // aim straight right → should pick mate 1
+    expect(choosePassTarget(0, 0, 1, 0, mates, PASS_CONE.full, 1)).toBe(1);
+  });
+
+  it('returns -1 when no mate falls inside the cone (caller must fall back)', () => {
+    // single mate straight right; aim straight up → 90° off, outside ±60°
+    const right: PassMate[] = [{ x: 200, y: 0, vx: 0, vy: 0 }];
+    expect(choosePassTarget(0, 0, 0, -1, right, PASS_CONE.full, 1)).toBe(-1);
+  });
+
+  it('a tighter cone rejects a marginally-aligned mate the wide cone accepts', () => {
+    const offAxis: PassMate[] = [{ x: 100, y: -70, vx: 0, vy: 0 }]; // ~35° off straight-right
+    expect(choosePassTarget(0, 0, 1, 0, offAxis, PASS_CONE.full, 1)).toBe(0); // ±60° accepts
+    expect(choosePassTarget(0, 0, 1, 0, offAxis, PASS_CONE.manual, 1)).toBe(-1); // ±14° rejects
+  });
+
+  it('ignores a zero-length aim and an empty mate list', () => {
+    expect(choosePassTarget(0, 0, 0, 0, mates, PASS_CONE.full, 1)).toBe(-1);
+    expect(choosePassTarget(0, 0, 1, 0, [], PASS_CONE.full, 1)).toBe(-1);
   });
 });
