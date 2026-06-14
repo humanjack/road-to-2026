@@ -31,6 +31,13 @@ import {
   type PassMate,
   PLAYER_ACCEL,
   PLAYER_DECEL,
+  shotRelease,
+  curveAccel,
+  stepCurve,
+  SHOT_SWEET_START,
+  SHOT_SWEET_END,
+  CURVE_ACCEL,
+  type CurveState,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -572,5 +579,95 @@ describe('skillMove', () => {
   it('returns a unit direction', () => {
     const s = skillMove(0, 1, 1, 0); // facing +y, flick +x → sidestep
     expect(Math.hypot(s.dx, s.dy)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('shotRelease (sweet window)', () => {
+  it('a release inside the window is sweet and snaps to max power', () => {
+    const r = shotRelease(0.85);
+    expect(r.sweet).toBe(true);
+    expect(r.power01).toBe(1);
+  });
+
+  it('the window boundaries are inclusive', () => {
+    expect(shotRelease(SHOT_SWEET_START).sweet).toBe(true);
+    expect(shotRelease(SHOT_SWEET_END).sweet).toBe(true);
+  });
+
+  it('a release just below or above the window is flat (power == charge)', () => {
+    const lo = shotRelease(SHOT_SWEET_START - 0.01);
+    expect(lo.sweet).toBe(false);
+    expect(lo.power01).toBeCloseTo(SHOT_SWEET_START - 0.01, 6);
+    const hi = shotRelease(SHOT_SWEET_END + 0.01);
+    expect(hi.sweet).toBe(false);
+    expect(hi.power01).toBeCloseTo(SHOT_SWEET_END + 0.01, 6);
+  });
+
+  it('clamps an out-of-range charge', () => {
+    expect(shotRelease(-1).power01).toBe(0);
+    expect(shotRelease(2).power01).toBe(1);
+    expect(shotRelease(2).sweet).toBe(false); // 1.0 is past the window
+  });
+});
+
+describe('curveAccel', () => {
+  it('scales lightly with power and stays positive', () => {
+    expect(curveAccel(0)).toBeCloseTo(CURVE_ACCEL * 0.7, 5);
+    expect(curveAccel(1)).toBe(CURVE_ACCEL);
+    expect(curveAccel(0.5)).toBeGreaterThan(curveAccel(0));
+  });
+});
+
+describe('stepCurve (in-flight bend)', () => {
+  // integrate a launch + curve over N fixed steps; return the lateral landing offset
+  function landingY(curve: number, steps = 60): number {
+    let vx = 500;
+    let vy = 0;
+    let y = 0;
+    let c = curve;
+    const dt = 1 / 60;
+    const out: CurveState = { vx: 0, vy: 0, curve: 0 };
+    for (let i = 0; i < steps; i++) {
+      y += vy * dt;
+      stepCurve(vx, vy, c, dt, out);
+      vx = out.vx;
+      vy = out.vy;
+      c = out.curve;
+    }
+    return y;
+  }
+
+  it('a positive curve bends one way and a negative curve the other', () => {
+    expect(landingY(900)).toBeGreaterThan(5);
+    expect(landingY(-900)).toBeLessThan(-5);
+  });
+
+  it('zero curve flies straight', () => {
+    expect(landingY(0)).toBe(0);
+  });
+
+  it('the bend is bounded — it converges (the curve decays), not a runaway spiral', () => {
+    // no-drag integration over a full second; in-game drag shortens flight further
+    expect(Math.abs(landingY(900))).toBeLessThan(400);
+  });
+
+  it('the curve decays toward straight over time', () => {
+    const out: CurveState = { vx: 0, vy: 0, curve: 0 };
+    let c = 900;
+    for (let i = 0; i < 600; i++) {
+      stepCurve(500, 0, c, 1 / 60, out);
+      c = out.curve;
+    }
+    expect(c).toBe(0); // settled
+  });
+
+  it('is deterministic for a fixed launch + curve value (same path every run)', () => {
+    expect(landingY(720)).toBe(landingY(720));
+  });
+
+  it('writes into the supplied scratch object (no allocation)', () => {
+    const out: CurveState = { vx: 0, vy: 0, curve: 0 };
+    const r = stepCurve(500, 0, 900, 1 / 60, out);
+    expect(r).toBe(out);
   });
 });

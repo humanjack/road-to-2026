@@ -572,6 +572,77 @@ export function shotPower01(speed: number, maxPower = 980): number {
   return Math.min(1, Math.max(0, speed / maxPower));
 }
 
+// --- charged-shot sweet window + curve (#133) ------------------------------
+//
+// Past the driven zone a short "sweet window" opens on the charge bar. Releasing
+// inside it snaps the shot to max power AND imparts curve — a lateral acceleration
+// applied to the free ball per fixed step that bends its path toward the aim side
+// then decays. A mistimed release still fires, just flat — the window is a reward,
+// not a gate. Determinism is over the recorded RELEASE-CHARGE VALUE: given the same
+// charge value + seed, the curve integrated from ball state is bit-identical.
+
+/** Charge fraction at which the sweet window opens / closes. */
+export const SHOT_SWEET_START = 0.78;
+export const SHOT_SWEET_END = 0.92;
+/** Base lateral acceleration (px/s²) of a curved (sweet) shot. */
+export const CURVE_ACCEL = 900;
+/** Per-second decay of the curve so the swerve eventually straightens. */
+const CURVE_DECAY = 0.5;
+
+export interface ShotRelease {
+  power01: number; // 0..1 strike power (a sweet release snaps to 1)
+  sweet: boolean; // released inside the window?
+}
+
+/** Resolve a charged-shot release: inside the sweet window → max power + sweet flag. */
+export function shotRelease(charge: number, sweetStart = SHOT_SWEET_START, sweetEnd = SHOT_SWEET_END): ShotRelease {
+  const c = charge < 0 ? 0 : charge > 1 ? 1 : charge;
+  const sweet = c >= sweetStart && c <= sweetEnd;
+  return { power01: sweet ? 1 : c, sweet };
+}
+
+/** Lateral-acceleration magnitude for a curved shot, lightly scaled by power. */
+export function curveAccel(power01: number, strength = CURVE_ACCEL): number {
+  const p = power01 < 0 ? 0 : power01 > 1 ? 1 : power01;
+  return strength * (0.7 + 0.3 * p);
+}
+
+export interface CurveState {
+  vx: number;
+  vy: number;
+  curve: number;
+}
+
+/**
+ * One fixed step of in-flight curve: accelerate the velocity along the left normal
+ * of its current heading by `curve`, then decay `curve` so the swerve dies out.
+ * Pure and allocation-free (writes into `out`); deterministic from ball state only,
+ * so a recorded launch + curve reproduces the same path every run.
+ */
+export function stepCurve(
+  vx: number,
+  vy: number,
+  curve: number,
+  dt: number,
+  out: CurveState = { vx: 0, vy: 0, curve: 0 },
+): CurveState {
+  if (curve !== 0 && dt > 0) {
+    const sp = Math.hypot(vx, vy);
+    if (sp > 1) {
+      const nx = -vy / sp; // left normal of the heading
+      const ny = vx / sp;
+      vx += nx * curve * dt;
+      vy += ny * curve * dt;
+    }
+    curve *= Math.pow(CURVE_DECAY, dt);
+    if (Math.abs(curve) < 1) curve = 0; // settle to straight
+  }
+  out.vx = vx;
+  out.vy = vy;
+  out.curve = curve;
+  return out;
+}
+
 // --- skill moves -----------------------------------------------------------
 //
 // A lightweight 1v1 toolkit: while carrying, a skill input jinks the ball. With

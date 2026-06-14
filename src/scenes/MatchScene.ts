@@ -36,6 +36,11 @@ import {
   assignMarks,
   markPoint,
   shotPower01,
+  shotRelease,
+  curveAccel,
+  stepCurve,
+  SHOT_SWEET_START,
+  SHOT_SWEET_END,
   skillMove,
   PASS_CONE,
   type BufferedInput,
@@ -143,9 +148,10 @@ export class MatchScene extends Phaser.Scene {
   private goalH = 168;
 
   private players: Player[] = [];
-  private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1 };
+  private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1, curve: 0 };
   private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
   private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
+  private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
 
@@ -770,6 +776,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.vx = 0;
     this.ball.vy = 0;
     this.ball.ownerIdx = -1;
+    this.ball.curve = 0; // clear any curve on a kickoff / post-goal reset (#133)
     this.inputBuf = null; // a stalled action must not survive a kickoff/goal reset
     this.charging = false;
     // nudge a kicking-side player onto the ball
@@ -1110,12 +1117,23 @@ export class MatchScene extends Phaser.Scene {
       ay = (this.py + this.ph / 2 - p.y) / 200;
     }
     const len = Math.hypot(ax, ay) || 1;
-    const power = 460 + charge * 520;
+    // sweet-window release (#133): inside the window snaps to max power; otherwise
+    // power is the raw charge. The launch is straight — curve is applied in flight.
+    const rel = shotRelease(charge);
+    const power = 460 + rel.power01 * 520;
     const vx = (ax / len) * power;
     const vy = (ay / len) * power;
-    this.registerShot(p.side, p.x, p.y, vx, vy);
-    this.kickBall(p, vx, vy);
-    if (charge > 0.8) {
+    this.registerShot(p.side, p.x, p.y, vx, vy); // straight launch → on-target heuristic unchanged
+    this.kickBall(p, vx, vy); // resets ball.curve to 0
+    if (rel.sweet) {
+      // curl the free ball toward the aim's lateral side; treat as a firework
+      const aySign = ay === 0 ? 1 : Math.sign(ay);
+      this.ball.curve = curveAccel(rel.power01) * aySign;
+      this.shake(120, 0.006);
+      this.requestTimeFx('screamer'); // one slow-mo, shared with the goal path (no extra strobe)
+      this.requestZoomPunch();
+      this.showBanner('CURLER!', C.lime, 550);
+    } else if (charge > 0.8) {
       this.shake(120, 0.006);
       this.requestTimeFx('screamer'); // slow-mo as the screamer flies
       this.requestZoomPunch(); // camera punch on the screamer (#127)
@@ -1260,6 +1278,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.vx = vx;
     this.ball.vy = vy;
     this.ball.ownerIdx = -1;
+    this.ball.curve = 0; // a fresh kick / pass has no curve until fireShot sets it (#133)
     // place just ahead so we don't immediately re-collect
     const len = Math.hypot(vx, vy) || 1;
     this.ball.x = from.x + (vx / len) * (PR + BR + 2);
@@ -1467,6 +1486,7 @@ export class MatchScene extends Phaser.Scene {
         this.ball.ownerIdx = i;
         this.ball.vx = 0;
         this.ball.vy = 0;
+        this.ball.curve = 0; // a caught ball has no curve (#133)
         this.ballCarryAng = Math.atan2(k.faceY, k.faceX);
         k.ballHold = 0;
         audio.play('save');
@@ -1475,6 +1495,7 @@ export class MatchScene extends Phaser.Scene {
         const away = k.side === 'home' ? 1 : -1;
         this.ball.vx = away * Math.max(260, Math.abs(this.ball.vx) * 0.6);
         this.ball.vy = (this.ball.y - k.y) * 4 + this.rng.range(-60, 60);
+        this.ball.curve = 0; // a parry kills the curve — the rebound flies straight (#133)
         this.lastKickIdx = i;
         this.kickCooldown = 0.1;
         audio.play('save');
@@ -1636,6 +1657,7 @@ export class MatchScene extends Phaser.Scene {
         this.ball.ownerIdx = owner;
         this.ball.vx = 0;
         this.ball.vy = 0;
+        this.ball.curve = 0; // collecting kills any in-flight curve (#133)
         // First touch: cushion the ball toward the receiver's facing (which, for
         // the user, is their held movement direction) so a received pass settles
         // under control instead of snapping from a stale carry angle.
@@ -1676,6 +1698,14 @@ export class MatchScene extends Phaser.Scene {
     const drag = Math.pow(0.34, dt);
     this.ball.vx *= drag;
     this.ball.vy *= drag;
+    // in-flight curve from a sweet-window release (#133): a decaying lateral accel,
+    // integrated per fixed step from ball state only (deterministic, no wall-clock)
+    if (this.ball.curve !== 0) {
+      const cs = stepCurve(this.ball.vx, this.ball.vy, this.ball.curve, dt, this.curveScratch);
+      this.ball.vx = cs.vx;
+      this.ball.vy = cs.vy;
+      this.ball.curve = cs.curve;
+    }
 
     // top/bottom walls
     if (this.ball.y < this.py + BR) {
@@ -2136,13 +2166,23 @@ export class MatchScene extends Phaser.Scene {
       this.dyn.fillStyle(C.surge, 0.35 + 0.4 * this.pulse);
       this.dyn.fillRect(bx + bw * 0.8, by, bw * 0.2, bh);
     }
+    // sweet-window highlight (#133): the green band to release inside for a CURLER
+    // (max power + curve). Flashes while the charge is inside it; steady under
+    // reduceMotion (information, not strobe).
+    const sx0 = bx + bw * SHOT_SWEET_START;
+    const sww = bw * (SHOT_SWEET_END - SHOT_SWEET_START);
+    const inSweet = charge >= SHOT_SWEET_START && charge <= SHOT_SWEET_END;
+    this.dyn.fillStyle(C.lime, this.reduceMotion ? 0.85 : inSweet ? 0.5 + 0.45 * this.pulse : 0.3);
+    this.dyn.fillRect(sx0, by, sww, bh);
+    this.dyn.lineStyle(1.5, C.lime, this.reduceMotion ? 1 : inSweet ? 0.7 + 0.3 * this.pulse : 0.55);
+    this.dyn.strokeRect(sx0, by - 1, sww, bh + 2);
     // 0.8 threshold tick
     this.dyn.fillStyle(C.light, 0.95);
     this.dyn.fillRect(bx + bw * 0.8 - 1, by - 2, 2, bh + 4);
-    // live percentage readout
+    // live percentage readout (green in the sweet window)
     this.chargeText
       .setText(`${Math.round(charge * 100)}%`)
-      .setColor(charge > 0.8 ? CSS.surge : CSS.light)
+      .setColor(inSweet ? CSS.lime : charge > 0.8 ? CSS.surge : CSS.light)
       .setPosition(ap.x, by - 9)
       .setVisible(true);
   }
