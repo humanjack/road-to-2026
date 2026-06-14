@@ -134,6 +134,8 @@ export class MatchScene extends Phaser.Scene {
   private players: Player[] = [];
   private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1 };
   private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
+  private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
+  private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
 
   private homeGoals = 0;
@@ -879,7 +881,7 @@ export class MatchScene extends Phaser.Scene {
     if (!p) return;
     // grounded after a whiffed slide: brake to a stop, no input/sprint this beat
     if (p.recovery > 0) {
-      const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt);
+      const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt, this.vScratch);
       p.vx = nb.x;
       p.vy = nb.y;
       p.sprinting = false;
@@ -904,7 +906,7 @@ export class MatchScene extends Phaser.Scene {
     // momentum: ease velocity toward the desired vector instead of snapping, so
     // starts feel responsive and hard turns carry weight. Facing stays instant
     // (zero-latency aim — the carried ball still points where you press).
-    const nv = approachVelocity(p.vx, p.vy, v.x * speed, v.y * speed, accel, PLAYER_DECEL, dt);
+    const nv = approachVelocity(p.vx, p.vy, v.x * speed, v.y * speed, accel, PLAYER_DECEL, dt, this.vScratch);
     p.vx = nv.x;
     p.vy = nv.y;
     if (v.x !== 0 || v.y !== 0) {
@@ -1148,7 +1150,7 @@ export class MatchScene extends Phaser.Scene {
       p.sprinting = false; // AI never sprints; keep the knock-on flag clean for the carry block
       // grounded after a whiffed slide: can't act, just brake to a stop
       if (p.recovery > 0) {
-        const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt);
+        const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt, this.vScratch);
         p.vx = nb.x;
         p.vy = nb.y;
         return;
@@ -1378,7 +1380,7 @@ export class MatchScene extends Phaser.Scene {
     }
     // same momentum model as the user (AI eases to its target velocity and
     // brakes to a stop near it) so every figure shares the weighty feel.
-    const nv = approachVelocity(p.vx, p.vy, desVx, desVy, PLAYER_ACCEL, PLAYER_DECEL, dt);
+    const nv = approachVelocity(p.vx, p.vy, desVx, desVy, PLAYER_ACCEL, PLAYER_DECEL, dt, this.vScratch);
     p.vx = nv.x;
     p.vy = nv.y;
   }
@@ -1726,8 +1728,12 @@ export class MatchScene extends Phaser.Scene {
     }
     this.bodyGfx.clear();
     const runT = this.reduceMotion ? 0 : this.time.now * 0.018;
-    const order = [...this.players].sort((a, b) => a.y - b.y);
-    for (const p of order) this.drawPlayer(p, runT);
+    // y-sort into a reused scratch array (no per-frame array copy)
+    const order = this.renderOrder;
+    for (let i = 0; i < this.players.length; i++) order[i] = this.players[i];
+    order.length = this.players.length;
+    order.sort((a, b) => a.y - b.y);
+    for (let i = 0; i < order.length; i++) this.drawPlayer(order[i], runT);
 
     this.ballGfx.setPosition(this.ball.x, this.ball.y);
 
