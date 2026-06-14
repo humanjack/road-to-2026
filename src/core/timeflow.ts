@@ -13,6 +13,31 @@
 // one TimeFlowState and mutate it in place.
 // ---------------------------------------------------------------------------
 
+import type { GameSpeed } from '../data/types';
+
+/**
+ * Resting match-pace multiplier for each Game Speed setting (#184). MatchScene
+ * multiplies the accumulator drain by this AND by the slow-mo time scale, so the
+ * whole sim plays proportionally slower in real time while staying bit-identical:
+ * the fixed-step count over a match is unchanged (the game clock still reaches
+ * `duration` after the same number of steps) — only how fast real time feeds the
+ * accumulator changes. 'brisk' is the raw pace; lower values give more time to
+ * track the ball / read the play / commit to a pass or shot. The 11v11 pitch +
+ * wider broadcast zoom already calmed the on-screen tempo a lot (#183); this is
+ * the fine adjustment on top, defaulting to 'standard'. Pure.
+ */
+export function paceForSpeed(speed: GameSpeed): number {
+  switch (speed) {
+    case 'relaxed':
+      return 0.72;
+    case 'brisk':
+      return 1.0;
+    case 'standard':
+    default:
+      return 0.85;
+  }
+}
+
 export interface TimeFlowState {
   hitStopMs: number; // remaining hard-freeze (scale 0) in ms
   slowMs: number; // remaining slow-mo in ms

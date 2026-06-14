@@ -42,14 +42,16 @@ export class SettingsScene extends Phaser.Scene {
     const rLabel = GAME_W / 2 + 120;
     const rCtrl = GAME_W - 200;
     this.section('CONTROLS', rLabel, 116);
-    let ry = 158;
+    let ry = 156;
     this.cycle('SPRINT', 'sprintMode', ['hold', 'toggle'], s.sprintMode, rLabel, ry, rCtrl);
-    ry += 62;
+    ry += 54;
     this.cycle('PASS ASSIST', 'passAssist', ['full', 'semi', 'manual'], s.passAssist, rLabel, ry, rCtrl);
-    ry += 62;
+    ry += 54;
     this.cycle('DEF. SWITCHING', 'defensiveSwitch', ['auto', 'manual'], s.defensiveSwitch, rLabel, ry, rCtrl);
-    ry += 62;
+    ry += 54;
     this.cycle('ZOOM', 'zoomLevel', ['wide', 'balanced', 'tight'], s.zoomLevel, rLabel, ry, rCtrl);
+    ry += 54;
+    this.cycle('GAME SPEED', 'gameSpeed', ['relaxed', 'standard', 'brisk'], s.gameSpeed, rLabel, ry, rCtrl);
     // glyph control legend (#146): the same grouped key-cap chips as the in-match
     // HUD, wrapped to the right column, plus an explicit touch-control description
     this.add

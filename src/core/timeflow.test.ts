@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from './timeflow';
+import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale, paceForSpeed } from './timeflow';
+
+describe('paceForSpeed (#184 match tempo)', () => {
+  it('maps each Game Speed to a distinct, increasing tempo multiplier', () => {
+    expect(paceForSpeed('relaxed')).toBe(0.72);
+    expect(paceForSpeed('standard')).toBe(0.85);
+    expect(paceForSpeed('brisk')).toBe(1.0);
+    expect(paceForSpeed('relaxed')).toBeLessThan(paceForSpeed('standard'));
+    expect(paceForSpeed('standard')).toBeLessThan(paceForSpeed('brisk'));
+  });
+
+  it('brisk is the raw (unslowed) pace and no level ever speeds the game up', () => {
+    expect(paceForSpeed('brisk')).toBe(1.0);
+    for (const s of ['relaxed', 'standard', 'brisk'] as const) {
+      expect(paceForSpeed(s)).toBeGreaterThan(0);
+      expect(paceForSpeed(s)).toBeLessThanOrEqual(1.0);
+    }
+  });
+
+  it('the default (standard) is a gentle slowdown for readability', () => {
+    expect(paceForSpeed('standard')).toBeGreaterThan(0.8);
+    expect(paceForSpeed('standard')).toBeLessThan(1.0);
+  });
+});
 
 describe('timeflow — idle', () => {
   it('returns scale 1 when nothing is requested', () => {

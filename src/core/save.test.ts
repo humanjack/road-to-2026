@@ -57,6 +57,7 @@ describe('save', () => {
       passAssist: 'full',
       defensiveSwitch: 'auto',
       zoomLevel: 'balanced',
+      gameSpeed: 'standard',
     });
     expect(d.unlocks).toEqual([]);
     expect(d.cosmetics).toEqual({ ball: 'default', pitch: 'default' });
@@ -129,6 +130,7 @@ describe('save', () => {
       expect(set.fictionalNations).toBe(false);
       expect(set.slowMo).toBe(true); // a save predating slow-mo merges to the default (#126)
       expect(set.zoomLevel).toBe('balanced'); // a save predating the zoom setting merges to the default (#127)
+      expect(set.gameSpeed).toBe('standard'); // a save predating the game-speed setting merges to the default (#184)
       // new control settings default for an old save that predates them
       expect(set.sprintMode).toBe('hold');
       expect(set.passAssist).toBe('full');
