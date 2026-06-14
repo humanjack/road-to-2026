@@ -10,6 +10,10 @@ import {
   bufferExpired,
   isOneTouch,
   INPUT_BUFFER_MS,
+  tackleOutcome,
+  ballExposure,
+  POKE_REACH,
+  SLIDE_REACH,
   PLAYER_ACCEL,
   PLAYER_DECEL,
 } from './movement';
@@ -265,5 +269,55 @@ describe('input buffer', () => {
     expect(isOneTouch(1000, 1100)).toBe(true); // 100ms after receiving
     expect(isOneTouch(1000, 1260)).toBe(false); // 260ms → not one-touch
     expect(isOneTouch(1000, 999)).toBe(false); // before receiving
+  });
+});
+
+describe('tackleOutcome', () => {
+  const base = { reach: POKE_REACH, exposure: 0.5, skill: 0.7, slide: false };
+
+  it('always misses when the ball is out of reach', () => {
+    expect(tackleOutcome({ ...base, dist: POKE_REACH + 1, roll: 0 })).toBe('miss');
+  });
+
+  it('a point-blank, exposed, skilled poke with a low roll wins the ball', () => {
+    const r = tackleOutcome({ ...base, dist: 2, exposure: 0.9, skill: 0.9, roll: 0.05 });
+    expect(r === 'steal' || r === 'loose').toBe(true);
+  });
+
+  it('a high roll always misses (success is capped below 1)', () => {
+    expect(tackleOutcome({ ...base, dist: 1, exposure: 1, skill: 1, slide: true, roll: 0.99 })).toBe('miss');
+  });
+
+  it('success is monotonic in closeness (for a fixed roll)', () => {
+    const far = tackleOutcome({ ...base, dist: POKE_REACH * 0.95, roll: 0.5 });
+    const near = tackleOutcome({ ...base, dist: POKE_REACH * 0.05, roll: 0.5 });
+    const rank = (r: string) => (r === 'miss' ? 0 : r === 'loose' ? 1 : 2);
+    expect(rank(near)).toBeGreaterThanOrEqual(rank(far));
+  });
+
+  it('a more exposed carrier is easier to dispossess (for a fixed roll)', () => {
+    const guarded = tackleOutcome({ ...base, dist: 18, exposure: 0.0, skill: 0.4, roll: 0.55 });
+    const exposed = tackleOutcome({ ...base, dist: 18, exposure: 1.0, skill: 0.4, roll: 0.55 });
+    const rank = (r: string) => (r === 'miss' ? 0 : r === 'loose' ? 1 : 2);
+    expect(rank(exposed)).toBeGreaterThanOrEqual(rank(guarded));
+  });
+
+  it('a slide wins more cleanly than a poke at the same geometry', () => {
+    const poke = tackleOutcome({ dist: 10, reach: SLIDE_REACH, exposure: 0.5, skill: 0.5, slide: false, roll: 0.1 });
+    const slide = tackleOutcome({ dist: 10, reach: SLIDE_REACH, exposure: 0.5, skill: 0.5, slide: true, roll: 0.1 });
+    const rank = (r: string) => (r === 'miss' ? 0 : r === 'loose' ? 1 : 2);
+    expect(rank(slide)).toBeGreaterThanOrEqual(rank(poke));
+  });
+});
+
+describe('ballExposure', () => {
+  it('is 0 with the ball at the foot and rises as it is knocked ahead', () => {
+    expect(ballExposure(CARRY_BASE)).toBe(0);
+    expect(ballExposure(CARRY_BASE + 15)).toBeGreaterThan(0);
+    expect(ballExposure(CARRY_BASE + 15)).toBeLessThan(1);
+  });
+  it('clamps to [0,1]', () => {
+    expect(ballExposure(0)).toBe(0);
+    expect(ballExposure(9999)).toBe(1);
   });
 });
