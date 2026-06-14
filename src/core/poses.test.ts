@@ -1,91 +1,104 @@
 import { describe, it, expect } from 'vitest';
-import { limbPose, selectPose, chooseCelebrant, depthScale, DEPTH_NEAR, DEPTH_FAR } from './poses';
+import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale, DEPTH_NEAR, DEPTH_FAR } from './poses';
 
-const PR = 15;
-
-describe("limbPose('run') is pixel-identical to the original inline swing", () => {
-  it('matches sin(t*2 + phase) * 0.5 * gait * PR for sampled inputs', () => {
-    const samples: [number, number, number][] = [
-      [0, 1, 0],
-      [1.3, 0.5, 1.7],
-      [10, 0.8, 3.4],
-      [123.4, 0.2, 0.9],
-    ];
-    for (const [t, gait, phase] of samples) {
-      const sw = Math.sin(t * 2 + phase) * 0.5 * gait * PR;
-      const p = limbPose('run', t, gait, phase, PR);
-      expect(p.farLeg).toBeCloseTo(sw, 10);
-      expect(p.nearLeg).toBeCloseTo(-sw, 10);
-      expect(p.farArm).toBeCloseTo(-sw, 10); // contralateral
-      expect(p.nearArm).toBeCloseTo(sw, 10);
-      expect(p.lean).toBe(0);
-      expect(p.crouch).toBe(1);
+describe('gaitPose (#anim run cycle)', () => {
+  it('is perfectly still at gait 0 (a standing player does not animate)', () => {
+    const p = gaitPose(1.234, 0);
+    for (const v of [p.backLegX, p.frontLegX, p.backFootLift, p.frontFootLift, p.backKnee, p.frontKnee, p.bob, p.armX]) {
+      expect(v).toBeCloseTo(0, 12); // (±0 — a standing player has no swing)
     }
   });
 
-  it('writes into the supplied scratch object (no allocation)', () => {
-    const out = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 };
-    const r = limbPose('run', 1, 1, 0, PR, out);
-    expect(r).toBe(out);
+  it('strides the legs contralaterally and swings the arms opposite the legs', () => {
+    const p = gaitPose(Math.PI / 2, 1); // sin = +1
+    expect(p.backLegX).toBeCloseTo(-p.frontLegX, 10); // legs mirror
+    expect(p.backLegX).toBeGreaterThan(0); // back foot forward at this phase
+    expect(Math.sign(p.armX)).toBe(-Math.sign(p.backLegX)); // arms counter the legs
+  });
+
+  it('only the recovering (forward-swinging) leg lifts + bends; foot lifts are never negative', () => {
+    const p = gaitPose(Math.PI / 2, 1); // back leg forward
+    expect(p.backFootLift).toBeGreaterThan(0);
+    expect(p.frontFootLift).toBe(0);
+    expect(p.backKnee).toBeGreaterThan(0);
+    for (let i = 0; i <= 24; i++) {
+      const q = gaitPose((i / 24) * Math.PI * 2, 1);
+      expect(q.backFootLift).toBeGreaterThanOrEqual(0);
+      expect(q.frontFootLift).toBeGreaterThanOrEqual(0);
+      expect(q.bob).toBeGreaterThanOrEqual(0); // the body never bobs below the stance line
+    }
+  });
+
+  it('the bob completes two bounces per stride (one per footfall) and survives non-finite input', () => {
+    expect(gaitPose(0, 1).bob).toBeCloseTo(0, 6); // footplant
+    expect(gaitPose(Math.PI / 2, 1).bob).toBeGreaterThan(0); // mid-swing
+    expect(gaitPose(Math.PI, 1).bob).toBeCloseTo(0, 6); // next footplant
+    const nan = gaitPose(NaN, NaN);
+    for (const v of [nan.backLegX, nan.bob, nan.armX]) expect(Number.isFinite(v)).toBe(true);
   });
 });
 
-describe('limbPose action poses', () => {
-  it('kick monotonically extends the striking leg from back to forward across t01', () => {
+describe('kickPose (#anim wind-up → strike → follow-through)', () => {
+  it('winds the striking leg BACK before the strike', () => {
+    expect(kickPose(0).legX).toBeCloseTo(0, 6); // neutral at the start
+    expect(kickPose(0.3).legX).toBeLessThan(0); // wound back at the end of the wind-up
+  });
+
+  it('sweeps monotonically forward from the wind-up to a high follow-through', () => {
     let prev = -Infinity;
-    for (let i = 0; i <= 10; i++) {
-      const p = limbPose('kick', i / 10, 1, 0, PR);
-      expect(p.farLeg).toBeGreaterThan(prev);
-      prev = p.farLeg;
+    for (let i = 3; i <= 10; i++) {
+      const p = kickPose(i / 10); // strike + follow-through window
+      expect(p.legX).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = p.legX;
     }
-    expect(limbPose('kick', 0, 1, 0, PR).farLeg).toBeLessThan(0); // wound back at the start
-    expect(limbPose('kick', 1, 1, 0, PR).farLeg).toBeGreaterThan(0.5 * PR); // extended at contact
-    expect(limbPose('kick', 1, 1, 0, PR).lean).toBeGreaterThan(0); // leans into the follow-through
+    expect(kickPose(1).legX).toBeGreaterThan(0.5); // extended forward at the end
+    expect(kickPose(1).lean).toBeGreaterThan(0); // leans into the follow-through
+    expect(kickPose(1).legLift).toBeGreaterThan(0); // foot finishes raised
   });
 
-  it('slide throws both legs forward, low (crouched) and leaning', () => {
-    const p = limbPose('slide', 0, 1, 0, PR);
-    expect(p.farLeg).toBeGreaterThan(0);
-    expect(p.nearLeg).toBeGreaterThan(0);
-    expect(p.crouch).toBeLessThan(1);
-    expect(p.lean).toBeGreaterThan(0);
+  it('the contact spike peaks mid-strike and is zero at the extremes', () => {
+    expect(kickPose(0).contact).toBeCloseTo(0, 6);
+    expect(kickPose(1).contact).toBeCloseTo(0, 6);
+    expect(kickPose(0.45).contact).toBeGreaterThan(0.9); // contact ≈ the ball line
   });
 
-  it('dive throws both arms forward (the keeper reach)', () => {
-    const p = limbPose('dive', 1, 0, 0, PR);
-    expect(p.farArm).toBeGreaterThan(0.5 * PR);
-    expect(p.nearArm).toBeGreaterThan(0.5 * PR);
+  it('all outputs finite for non-finite progress', () => {
+    const p = kickPose(NaN);
+    for (const v of [p.legX, p.legLift, p.plantKnee, p.lean, p.armX, p.contact]) expect(Number.isFinite(v)).toBe(true);
   });
+});
 
-  it('celebrate raises both arms', () => {
-    const p = limbPose('celebrate', 0, 0, 0, PR);
-    expect(p.farArm).toBeGreaterThan(0.5 * PR);
-    expect(p.nearArm).toBeGreaterThan(0.5 * PR);
-  });
-
-  it('all outputs are finite for guarded inputs', () => {
-    for (const a of ['run', 'kick', 'slide', 'dive', 'celebrate'] as const) {
-      const p = limbPose(a, NaN, NaN, NaN, PR);
-      for (const v of [p.farLeg, p.nearLeg, p.farArm, p.nearArm, p.lean, p.crouch]) {
-        expect(Number.isFinite(v)).toBe(true);
-      }
-    }
+describe('receivePose (#anim first-touch cushion)', () => {
+  it('dips + reaches at the touch and settles to neutral', () => {
+    const touch = receivePose(0);
+    expect(touch.crouch).toBeLessThan(1); // dipped to cushion
+    expect(touch.reach).toBeGreaterThan(0); // lead foot reaches to the ball
+    expect(touch.lean).toBeLessThan(0); // leans back a touch to absorb
+    const settled = receivePose(1);
+    expect(settled.crouch).toBeCloseTo(1, 6);
+    expect(settled.reach).toBeCloseTo(0, 6);
+    expect(settled.lean).toBeCloseTo(0, 6);
   });
 });
 
 describe('selectPose priority', () => {
   it('celebrate beats everything', () => {
-    expect(selectPose(0.2, 0.2, 0.2, 0.2, 0.5).action).toBe('celebrate');
+    expect(selectPose(0.2, 0.2, 0.2, 0.2, 0.5, 0.2).action).toBe('celebrate');
   });
   it('dive beats slide/kick', () => {
     expect(selectPose(0.2, 0.3, 0.2, 0.2, 0).action).toBe('dive');
   });
-  it('slide (slideT or recovery) beats kick', () => {
-    expect(selectPose(0.2, 0, 0.3, 0, 0).action).toBe('slide');
-    expect(selectPose(0.2, 0, 0, 0.4, 0).action).toBe('slide');
+  it('an active slide beats recover/kick', () => {
+    expect(selectPose(0.2, 0, 0.3, 0.2, 0).action).toBe('slide');
   });
-  it('kick beats run', () => {
-    expect(selectPose(0.2, 0, 0, 0, 0).action).toBe('kick');
+  it('recover (grounded after a whiffed slide) is its own action and beats kick', () => {
+    expect(selectPose(0.2, 0, 0, 0.4, 0).action).toBe('recover');
+  });
+  it('kick beats receive and run', () => {
+    expect(selectPose(0.2, 0, 0, 0, 0, 0.2).action).toBe('kick');
+  });
+  it('receive beats run', () => {
+    expect(selectPose(0, 0, 0, 0, 0, 0.2).action).toBe('receive');
   });
   it('falls back to run when idle, and timed progress advances 0→1', () => {
     expect(selectPose(0, 0, 0, 0, 0).action).toBe('run');
