@@ -51,6 +51,7 @@ describe('save', () => {
       sfx: true,
       music: true,
       reduceMotion: false,
+      slowMo: true,
       muted: false,
       sprintMode: 'hold',
       passAssist: 'full',
@@ -125,6 +126,7 @@ describe('save', () => {
       expect(set.sfx).toBe(false);
       expect(set.music).toBe(true); // default preserved
       expect(set.fictionalNations).toBe(false);
+      expect(set.slowMo).toBe(true); // a save predating slow-mo merges to the default (#126)
       // new control settings default for an old save that predates them
       expect(set.sprintMode).toBe('hold');
       expect(set.passAssist).toBe('full');
