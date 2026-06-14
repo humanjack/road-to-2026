@@ -48,6 +48,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio, crowdLevelFromSurge } from '../core/audio';
+import { limbPose, selectPose, chooseCelebrant } from '../core/poses';
 import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
@@ -101,6 +102,11 @@ interface Player {
   tackleCd: number; // seconds until this player may attempt another tackle
   recovery: number; // seconds grounded after a whiffed slide (can't move/act)
   ballHold: number; // seconds a keeper has held a caught ball (drives distribution)
+  // pose countdowns (#137), all sim-ticked in integratePlayers (deterministic)
+  kickT: number; // kick wind-up / follow-through
+  diveT: number; // keeper dive
+  slideT: number; // committed slide
+  celebrateT: number; // goal celebration
 }
 
 const PR = 15; // player radius
@@ -152,6 +158,7 @@ export class MatchScene extends Phaser.Scene {
   private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
   private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
   private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
+  private poseScratch = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 }; // reused for limbPose (#137)
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
 
@@ -602,6 +609,10 @@ export class MatchScene extends Phaser.Scene {
       tackleCd: 0,
       recovery: 0,
       ballHold: 0,
+      kickT: 0,
+      diveT: 0,
+      slideT: 0,
+      celebrateT: 0,
     };
   }
 
@@ -712,7 +723,10 @@ export class MatchScene extends Phaser.Scene {
     const t = this.players[tacklerIdx];
     if (t.tackleCd > 0 || t.recovery > 0) return 'miss';
     t.tackleCd = slide ? 0.5 : 0.28;
-    if (slide) this.lunge(t);
+    if (slide) {
+      this.lunge(t);
+      t.slideT = 0.4; // committed-slide pose (#137)
+    }
     const ownerIdx = this.ball.ownerIdx;
     // nothing to win if the ball is loose or held by a team-mate
     if (ownerIdx < 0 || this.players[ownerIdx].side === t.side) {
@@ -774,6 +788,10 @@ export class MatchScene extends Phaser.Scene {
       p.y = p.hy;
       p.vx = 0;
       p.vy = 0;
+      p.kickT = 0; // clear any pose so a celebration never leaks past kickoff (#137)
+      p.diveT = 0;
+      p.slideT = 0;
+      p.celebrateT = 0;
     }
     this.ball.x = this.px + this.pw / 2;
     this.ball.y = this.py + this.ph / 2;
@@ -1290,6 +1308,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.y = from.y + (vy / len) * (PR + BR + 2);
     this.lastKickIdx = this.players.indexOf(from);
     this.kickCooldown = 0.18;
+    from.kickT = 0.28; // kick wind-up + follow-through pose (#137; user + AI)
     audio.playKick(shotPower01(len)); // power-scaled thwock: a screamer hits harder than a tap
   }
 
@@ -1485,6 +1504,7 @@ export class MatchScene extends Phaser.Scene {
       // dive: lunge toward the ball's line
       const dy = this.ball.y - k.y;
       k.vy += Math.sign(dy) * Math.min(220, Math.abs(dy) * 8);
+      k.diveT = 0.45; // keeper dive pose (#137)
       const reaction = this.keeperReaction(k.side);
       const res = saveOutcome(d, SAVE_REACH, reaction, this.rng.next());
       if (res === 'catch') {
@@ -1609,6 +1629,11 @@ export class MatchScene extends Phaser.Scene {
       // tick tackle cooldown + post-slide recovery lockout
       if (p.tackleCd > 0) p.tackleCd = Math.max(0, p.tackleCd - dt);
       if (p.recovery > 0) p.recovery = Math.max(0, p.recovery - dt);
+      // pose countdowns (#137) — sim-ticked so replays produce identical pose timings
+      if (p.kickT > 0) p.kickT = Math.max(0, p.kickT - dt);
+      if (p.diveT > 0) p.diveT = Math.max(0, p.diveT - dt);
+      if (p.slideT > 0) p.slideT = Math.max(0, p.slideT - dt);
+      if (p.celebrateT > 0) p.celebrateT = Math.max(0, p.celebrateT - dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       // keep inside pitch bounds (a little margin so GK can sit on the line)
@@ -1756,6 +1781,10 @@ export class MatchScene extends Phaser.Scene {
     this.lastScorer = side;
     this.requestTimeFx('goal'); // freeze + slow-mo on the net-hit (the firework moment)
     this.requestZoomPunch(); // camera punch-in on the goal (#127)
+    // the scorer (or nearest scoring-side outfielder) celebrates through the goal freeze (#137)
+    const goalX = side === 'home' ? this.px + this.pw : this.px;
+    const celebIdx = chooseCelebrant(side, this.lastKickIdx, this.players, goalX, this.players.map((pl) => pl.x));
+    if (celebIdx >= 0) this.players[celebIdx].celebrateT = 1.5;
     if (side === 'home') this.homeGoals++;
     else this.awayGoals++;
     // reward trailing team with surge reset; scoring team modest
@@ -2098,19 +2127,32 @@ export class MatchScene extends Phaser.Scene {
     p.renderAng = Phaser.Math.Angle.Wrap(p.renderAng + dA * (this.reduceMotion ? 1 : 0.3));
 
     const speed = Math.hypot(p.vx, p.vy);
-    const gait = Phaser.Math.Clamp(speed / 200, 0, 1); // 200 ≈ base playerSpeed
-    const sw = this.reduceMotion ? 0 : Math.sin(runT * 2 + p.phase) * 0.5 * gait * PR; // px stride
+    // reduceMotion freezes the run swing (gait 0); committed poses still render
+    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1); // 200 ≈ base playerSpeed
+
+    // Pick the active pose from the player's sim-ticked countdowns (#137); 'run' uses
+    // the continuous clock, the rest a 0..1 progress. limbPose('run') is the exact
+    // original swing, so jogging figures are unchanged.
+    const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT);
+    const pose = limbPose(sel.action, sel.action === 'run' ? runT : sel.t, gait, p.phase, PR, this.poseScratch);
+    // celebrate hop: a vertical bounce on the goal beat (frozen under reduceMotion);
+    // figure only — the shadow stays grounded so it reads as a jump
+    const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.5 * PR : 0;
 
     const g = this.bodyGfx;
     g.save();
-    g.translateCanvas(p.x, p.y);
+    // shared figure transform order (#137): translate → rotate → lean → crouch →
+    // [depthScale #128] → [squash #131] → limbs/torso
+    g.translateCanvas(p.x, p.y - hop);
     g.rotateCanvas(p.renderAng);
+    if (pose.lean !== 0) g.translateCanvas(pose.lean, 0); // forward shift along facing
+    if (pose.crouch !== 1) g.scaleCanvas(1, pose.crouch); // lay low for a slide / dive
 
-    // limbs first (under the torso), sliding along the facing axis, contralateral
-    this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, sw, p.shorts); // far leg
-    this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, -sw, p.shorts); // near leg
-    this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, -sw, p.skin); // far arm
-    this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, sw, p.skin); // near arm
+    // limbs first (under the torso), offset per the active pose, contralateral
+    this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg
+    this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, pose.nearLeg, p.shorts); // near leg
+    this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, pose.farArm, p.skin); // far arm
+    this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, pose.nearArm, p.skin); // near arm
 
     // hips (shorts) then torso (kit) — torso is wider across the shoulders (y)
     g.fillStyle(p.shorts, 1);
