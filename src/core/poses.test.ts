@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { limbPose, selectPose, chooseCelebrant } from './poses';
+import { limbPose, selectPose, chooseCelebrant, depthScale, DEPTH_NEAR, DEPTH_FAR } from './poses';
 
 const PR = 15;
 
@@ -116,5 +116,52 @@ describe('chooseCelebrant', () => {
   it('never returns a conceding-side index (own goal credited to the kicker)', () => {
     const idx = chooseCelebrant('away', 1, players, 64, xs); // 1 is home → fallback to away outfield
     expect(idx).toBe(2);
+  });
+});
+
+describe('depthScale (#128 scale-for-depth)', () => {
+  const py = 80;
+  const ph = 560; // pitch spans y ∈ [80, 640]
+
+  it('is DEPTH_FAR at the far (top) touchline and DEPTH_NEAR at the near (bottom) one', () => {
+    expect(depthScale(py, py, ph)).toBeCloseTo(DEPTH_FAR, 6);
+    expect(depthScale(py + ph, py, ph)).toBeCloseTo(DEPTH_NEAR, 6);
+  });
+
+  it('is exactly 1 at the midline (no scaling at centre)', () => {
+    expect(depthScale(py + ph / 2, py, ph)).toBeCloseTo((DEPTH_FAR + DEPTH_NEAR) / 2, 6);
+    expect((DEPTH_FAR + DEPTH_NEAR) / 2).toBeCloseTo(1, 6); // band is symmetric about 1
+  });
+
+  it('increases monotonically with y (nearer ⇒ larger)', () => {
+    let prev = -Infinity;
+    for (let y = py - 50; y <= py + ph + 50; y += 20) {
+      const f = depthScale(y, py, ph);
+      expect(f).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = f;
+    }
+  });
+
+  it('stays clamped within [DEPTH_FAR, DEPTH_NEAR] even well off the pitch', () => {
+    for (const y of [-1000, -1, py - 200, py + ph + 200, 99999]) {
+      const f = depthScale(y, py, ph);
+      expect(f).toBeGreaterThanOrEqual(DEPTH_FAR);
+      expect(f).toBeLessThanOrEqual(DEPTH_NEAR);
+    }
+  });
+
+  it('the band never inverts/balloons when composed with the squash-stretch band [0.85,1.18]', () => {
+    for (const y of [py, py + ph / 2, py + ph]) {
+      const f = depthScale(y, py, ph);
+      expect(f * 0.85).toBeGreaterThan(0); // never negative/zero (no inversion)
+      expect(f * 1.18).toBeLessThan(1.4); // bounded combined scale
+    }
+  });
+
+  it('falls back to 1 for non-finite or degenerate input (allocation-free guard)', () => {
+    expect(depthScale(NaN, py, ph)).toBe(1);
+    expect(depthScale(py, py, 0)).toBe(1);
+    expect(depthScale(py, py, -10)).toBe(1);
+    expect(depthScale(Infinity, py, ph)).toBe(1);
   });
 });
