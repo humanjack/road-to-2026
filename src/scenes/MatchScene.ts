@@ -8,6 +8,7 @@ import { penaltyShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
 import {
   approachVelocity,
+  turnBleed,
   stepStamina,
   carryOffset,
   easeCarryAngle,
@@ -107,6 +108,7 @@ interface Player {
   diveT: number; // keeper dive
   slideT: number; // committed slide
   celebrateT: number; // goal celebration
+  leanAng: number; // cosmetic body-lean into a hard cut (#129), eased in the render
 }
 
 const PR = 15; // player radius
@@ -130,6 +132,7 @@ const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack
 const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
+const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -613,6 +616,7 @@ export class MatchScene extends Phaser.Scene {
       diveT: 0,
       slideT: 0,
       celebrateT: 0,
+      leanAng: 0,
     };
   }
 
@@ -1105,7 +1109,7 @@ export class MatchScene extends Phaser.Scene {
     p.sprinting = sprinting; // drives the ball knock-on while carrying (read in updateBall)
     const speedMul = sprinting ? SPRINT_SPEED_MUL : 1;
     const accel = sprinting ? PLAYER_ACCEL * SPRINT_ACCEL_MUL : PLAYER_ACCEL;
-    const speed = this.playerSpeed(p, 'home') * speedMul;
+    const speed = this.playerSpeed(p, 'home') * speedMul * turnBleed(p.vx, p.vy, v.x, v.y); // hard-cut speed-bleed (#129)
     // momentum: ease velocity toward the desired vector instead of snapping, so
     // starts feel responsive and hard turns carry weight. Facing stays instant
     // (zero-latency aim — the carried ball still points where you press).
@@ -1594,10 +1598,13 @@ export class MatchScene extends Phaser.Scene {
     let desVx = 0;
     let desVy = 0;
     if (len >= 4) {
-      desVx = (dx / len) * speed;
-      desVy = (dy / len) * speed;
-      p.faceX = dx / len;
-      p.faceY = dy / len;
+      const ux = dx / len;
+      const uy = dy / len;
+      const bleed = turnBleed(p.vx, p.vy, ux, uy); // AI shares the planted-cut weight (#129)
+      desVx = ux * speed * bleed;
+      desVy = uy * speed * bleed;
+      p.faceX = ux;
+      p.faceY = uy;
     }
     // same momentum model as the user (AI eases to its target velocity and
     // brakes to a stop near it) so every figure shares the weighty feel.
@@ -2139,12 +2146,21 @@ export class MatchScene extends Phaser.Scene {
     // figure only — the shadow stays grounded so it reads as a jump
     const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.5 * PR : 0;
 
+    // body-lean into a hard cut (#129): over-rotate slightly toward the velocity↔facing
+    // lag, eased in place. Pure visual — gated by reduceMotion (leanAng decays to 0).
+    let leanTarget = 0;
+    if (!this.reduceMotion && speed > 50) {
+      const d = Phaser.Math.Angle.Wrap(Math.atan2(p.vy, p.vx) - p.renderAng);
+      leanTarget = Phaser.Math.Clamp(d * 0.5, -MAX_LEAN, MAX_LEAN);
+    }
+    p.leanAng += (leanTarget - p.leanAng) * 0.3; // ease / decay in place
+
     const g = this.bodyGfx;
     g.save();
-    // shared figure transform order (#137): translate → rotate → lean → crouch →
-    // [depthScale #128] → [squash #131] → limbs/torso
+    // shared figure transform order (#137): translate → rotate(+cut-lean #129) → pose-lean
+    // → crouch → [depthScale #128] → [squash #131] → limbs/torso
     g.translateCanvas(p.x, p.y - hop);
-    g.rotateCanvas(p.renderAng);
+    g.rotateCanvas(p.renderAng + p.leanAng);
     if (pose.lean !== 0) g.translateCanvas(pose.lean, 0); // forward shift along facing
     if (pose.crouch !== 1) g.scaleCanvas(1, pose.crouch); // lay low for a slide / dive
 
