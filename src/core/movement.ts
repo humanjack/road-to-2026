@@ -92,6 +92,38 @@ export function approachVelocity(
   return out;
 }
 
+// --- turning (hard-cut bleed + lean) ---------------------------------------
+//
+// A sharp direction change should read as a planted cut, not a frictionless
+// pivot: the player bleeds a little speed (the cost of the turn, a defender's
+// counterplay) and the body leans into the new heading for a beat. Both derive
+// from the same "sharpness" — how far the desired heading is from the current
+// velocity. Pure functions of the velocity vectors (no dt, no wall-clock), so
+// the bleed is replay-deterministic.
+
+/**
+ * How sharp a turn is, 0..1: 0 for a gentle change (angle within `threshold`),
+ * ramping to 1 at a full 180° reversal. Returns 0 when barely moving / no input.
+ */
+export function turnSharpness(curVx: number, curVy: number, desVx: number, desVy: number, threshold = 0.25): number {
+  const cs = Math.hypot(curVx, curVy);
+  const ds = Math.hypot(desVx, desVy);
+  if (cs < 1 || ds < 0.01) return 0; // not moving (px/s) or no desired heading (unit or velocity)
+  const cos = (curVx * desVx + curVy * desVy) / (cs * ds); // -1 reverse … 1 same heading
+  if (cos >= threshold) return 0;
+  return Math.min(1, (threshold - cos) / (threshold + 1));
+}
+
+/**
+ * Speed-retention factor for a turn (multiply the desired speed by this). 1.0 on
+ * a straight hold, dipping to `1 - bleed` on the hardest reversal, clamped to a
+ * `floor` so a cut never stalls the player. A few percent on the sharpest turns.
+ */
+export function turnBleed(curVx: number, curVy: number, desVx: number, desVy: number, bleed = 0.1, floor = 0.85): number {
+  const sharp = turnSharpness(curVx, curVy, desVx, desVy);
+  return Math.max(floor, 1 - bleed * sharp);
+}
+
 // --- sprint & stamina ------------------------------------------------------
 //
 // Sprint is a managed burst, not a free always-on button. While sprinting the

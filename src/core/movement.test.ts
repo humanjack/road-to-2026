@@ -38,6 +38,8 @@ import {
   SHOT_SWEET_END,
   CURVE_ACCEL,
   type CurveState,
+  turnSharpness,
+  turnBleed,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -579,6 +581,46 @@ describe('skillMove', () => {
   it('returns a unit direction', () => {
     const s = skillMove(0, 1, 1, 0); // facing +y, flick +x → sidestep
     expect(Math.hypot(s.dx, s.dy)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('turnSharpness / turnBleed (#129)', () => {
+  it('a straight hold has zero sharpness and full speed retention', () => {
+    expect(turnSharpness(200, 0, 1, 0)).toBe(0);
+    expect(turnBleed(200, 0, 1, 0)).toBe(1);
+  });
+
+  it('a gentle turn (within threshold) still bleeds nothing', () => {
+    // ~30° change: cos ≈ 0.87 > threshold
+    expect(turnSharpness(200, 0, Math.cos(0.5), Math.sin(0.5))).toBe(0);
+    expect(turnBleed(200, 0, Math.cos(0.5), Math.sin(0.5))).toBe(1);
+  });
+
+  it('sharpness rises monotonically as the turn approaches 180°', () => {
+    let prev = -1;
+    for (let i = 0; i <= 10; i++) {
+      const ang = (Math.PI * i) / 10; // 0 → 180°
+      const s = turnSharpness(200, 0, Math.cos(ang), Math.sin(ang));
+      expect(s).toBeGreaterThanOrEqual(prev);
+      prev = s;
+    }
+    expect(turnSharpness(200, 0, -1, 0)).toBeCloseTo(1, 5); // full reversal
+  });
+
+  it('a 180° reverse dips speed a few percent but never below the floor', () => {
+    const r = turnBleed(200, 0, -1, 0); // sharpest
+    expect(r).toBeLessThan(1);
+    expect(r).toBeGreaterThanOrEqual(0.85); // floor
+    expect(1 - r).toBeLessThan(0.16); // only a few percent
+  });
+
+  it('returns neutral when barely moving or no desired heading', () => {
+    expect(turnSharpness(0, 0, 1, 0)).toBe(0);
+    expect(turnBleed(200, 0, 0, 0)).toBe(1);
+  });
+
+  it('is deterministic for identical inputs', () => {
+    expect(turnBleed(150, 40, -1, 0.2)).toBe(turnBleed(150, 40, -1, 0.2));
   });
 });
 
