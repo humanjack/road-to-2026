@@ -490,9 +490,10 @@ export class MatchScene extends Phaser.Scene {
   // zoom and persist the choice to settings.zoomLevel; TACTICAL hands off the
   // follow and pins a static, zoomed-out overhead centred on the pitch. A no-op if
   // the view is already active (so mashing a key doesn't restamp the toast/save),
-  // and inert once the match is finishing (the victory beat owns the camera).
+  // and inert during the end-of-match beats (fulltime + the penalty shootout own
+  // the camera — a mid-beat switch would fight their fixed framing).
   private setCameraView(view: CameraView): void {
-    if (this.finished || this.state === 'fulltime') return;
+    if (this.finished || this.state === 'fulltime' || this.state === 'pens') return;
     if (view === this.currentView) return;
     this.currentView = view;
     const cam = this.cameras.main;
