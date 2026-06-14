@@ -50,6 +50,7 @@ import {
   SHOT_SWEET_END,
   skillMove,
   PASS_CONE,
+  squashStretch,
   type BufferedInput,
   type TackleResult,
   type PassMate,
@@ -115,6 +116,9 @@ interface Player {
   slideT: number; // committed slide
   celebrateT: number; // goal celebration
   leanAng: number; // cosmetic body-lean into a hard cut (#129), eased in the render
+  kickPop: number; // sim-ticked power-scaled kick impulse for squash-stretch (#131)
+  pvx: number; // render-only prev velocity (for the along-facing accel that drives #131)
+  pvy: number;
 }
 
 const PR = 15; // player radius
@@ -184,6 +188,7 @@ export class MatchScene extends Phaser.Scene {
   private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
   private poseScratch = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 }; // reused for limbPose (#137)
   private bumpScratch = { ax: 0, ay: 0, bx: 0, by: 0 }; // reused output for resolveBump (#130)
+  private squashScratch = { sx: 1, sy: 1 }; // reused output for squashStretch (#131)
   private bumpCd = 0; // body-bump sfx/fx rate-limit
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
@@ -738,6 +743,9 @@ export class MatchScene extends Phaser.Scene {
       slideT: 0,
       celebrateT: 0,
       leanAng: 0,
+      kickPop: 0,
+      pvx: 0,
+      pvy: 0,
     };
   }
 
@@ -917,6 +925,7 @@ export class MatchScene extends Phaser.Scene {
       p.diveT = 0;
       p.slideT = 0;
       p.celebrateT = 0;
+      p.kickPop = 0; // clear any residual kick stretch (#131)
     }
     this.ball.x = this.px + this.pw / 2;
     this.ball.y = this.py + this.ph / 2;
@@ -1472,6 +1481,7 @@ export class MatchScene extends Phaser.Scene {
     this.lastKickIdx = this.players.indexOf(from);
     this.kickCooldown = 0.18;
     from.kickT = 0.28; // kick wind-up + follow-through pose (#137; user + AI)
+    from.kickPop = shotPower01(len); // power-scaled kick stretch impulse, springs back (#131)
     audio.playKick(shotPower01(len)); // power-scaled thwock: a screamer hits harder than a tap
   }
 
@@ -1808,6 +1818,7 @@ export class MatchScene extends Phaser.Scene {
       if (p.diveT > 0) p.diveT = Math.max(0, p.diveT - dt);
       if (p.slideT > 0) p.slideT = Math.max(0, p.slideT - dt);
       if (p.celebrateT > 0) p.celebrateT = Math.max(0, p.celebrateT - dt);
+      if (p.kickPop > 0) p.kickPop = Math.max(0, p.kickPop - dt * 5); // springs back in ~0.2s (#131)
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       // keep inside pitch bounds (a little margin so GK can sit on the line)
@@ -2390,6 +2401,17 @@ export class MatchScene extends Phaser.Scene {
     }
     p.leanAng += (leanTarget - p.leanAng) * 0.3; // ease / decay in place
 
+    // squash-stretch (#131): along-facing acceleration this frame (render-derived,
+    // no sim state touched) + the power-scaled kick impulse → a brief scale pop.
+    // Gated by reduceMotion. The accel uses the real (unscaled) frame dt.
+    const fx = Math.cos(p.renderAng);
+    const fy = Math.sin(p.renderAng);
+    const idt = 1 / Math.max(1 / 240, this.realDtSec);
+    const accelAlong = ((p.vx - p.pvx) * fx + (p.vy - p.pvy) * fy) * idt;
+    p.pvx = p.vx;
+    p.pvy = p.vy;
+    const sq = this.reduceMotion ? null : squashStretch(accelAlong, p.kickPop, this.squashScratch);
+
     const g = this.bodyGfx;
     g.save();
     // shared figure transform order (#137): translate → rotate(+cut-lean #129) → pose-lean
@@ -2401,6 +2423,8 @@ export class MatchScene extends Phaser.Scene {
     // scale-for-depth (#128): gentle broadcast perspective, clamped [0.88,1.12]
     const ds = depthScale(p.y, this.py, this.ph);
     g.scaleCanvas(ds, ds);
+    // squash-stretch (#131): the single figure scale channel, at the squash slot
+    if (sq && (sq.sx !== 1 || sq.sy !== 1)) g.scaleCanvas(sq.sx, sq.sy);
 
     // limbs first (under the torso), offset per the active pose, contralateral
     this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg

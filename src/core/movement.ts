@@ -234,6 +234,54 @@ export function rippleAmplitude(age: number, settle = 0.5, maxAmp = 7): number {
   return maxAmp * (1 - age / settle);
 }
 
+// --- squash-stretch (#131) -------------------------------------------------
+//
+// The single canonical figure SCALE channel — gives acceleration and impact a
+// body. A signed along-facing acceleration (px/s², render-derived) stretches the
+// figure along facing on a burst (sx>1, sy<1) and squashes it on a hard plant-stop
+// (sx<1, sy>1); a power-scaled kick impulse (0..1) adds a forward stretch that
+// springs back. A deadzone keeps steady cruising neutral so only real bursts/stops
+// pop. Hard-clamped to [SQUASH_MIN, SQUASH_MAX] so the silhouette never inverts or
+// balloons and composes safely with depthScale's [0.88,1.12]. Pure + allocation-free
+// (writes into `out`); no time source — the spring SETTLE comes from the decaying
+// inputs, not from this function. The sprint-ramp tell (#144) CONSUMES this channel.
+
+export const SQUASH_MIN = 0.85;
+export const SQUASH_MAX = 1.18;
+export const ACCEL_DEADZONE = 250; // px/s² below which motion reads as steady cruise (no pop)
+export const ACCEL_REF = 1600; // ≈ the integrator accel/decel scale → full response
+const ACCEL_AMP = 0.12; // acceleration contributes up to ±12%
+const KICK_AMP = 0.18; // a full-power kick adds up to +18% forward stretch
+
+export interface Squash {
+  sx: number; // scale along facing (forward = local +x)
+  sy: number; // scale perpendicular to facing
+}
+
+/** True when a per-step deceleration is hard enough to read as a plant/impact. */
+export function isHardStop(accelAlong: number, threshold = ACCEL_DEADZONE * 2): boolean {
+  return Number.isFinite(accelAlong) && accelAlong < -threshold;
+}
+
+export function squashStretch(accelAlong: number, kickImpulse: number, out: Squash): Squash {
+  let s = 0;
+  if (Number.isFinite(accelAlong)) {
+    const mag = Math.abs(accelAlong);
+    if (mag > ACCEL_DEADZONE) {
+      const eff = ((mag - ACCEL_DEADZONE) / ACCEL_REF) * Math.sign(accelAlong);
+      s += (eff < -1 ? -1 : eff > 1 ? 1 : eff) * ACCEL_AMP;
+    }
+  }
+  if (Number.isFinite(kickImpulse) && kickImpulse > 0) {
+    s += (kickImpulse > 1 ? 1 : kickImpulse) * KICK_AMP;
+  }
+  const sx = 1 + s; // stretch along facing for s>0, compress for s<0
+  const sy = 1 - s * 0.75; // perpendicular mirror (widen on a stop)
+  out.sx = sx < SQUASH_MIN ? SQUASH_MIN : sx > SQUASH_MAX ? SQUASH_MAX : sx;
+  out.sy = sy < SQUASH_MIN ? SQUASH_MIN : sy > SQUASH_MAX ? SQUASH_MAX : sy;
+  return out;
+}
+
 // --- lofted ball (chip / lofted through-ball) ------------------------------
 //
 // Some kicks become airborne and arc over ground-level interception (a chip over
