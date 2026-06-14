@@ -44,6 +44,7 @@ import {
 } from '../core/movement';
 import { audio } from '../core/audio';
 import { cameraTarget, followStep } from '../core/camera';
+import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
 export interface MatchInit {
   homeId: string;
@@ -218,6 +219,11 @@ export class MatchScene extends Phaser.Scene {
   private worldBounds = { x: 0, y: 0, w: GAME_W, h: GAME_H };
   private camFollow = true;
 
+  // --- time-fx (#126): slow-mo + hit-stop, presentation-side only ---
+  private timeFlow = createTimeFlow();
+  private timeScale = 1; // current presentation time scale (drives the accumulator drain)
+  private slowMoOn = true; // SLOW MOTION setting (gates all time-fx)
+
   constructor() {
     super('Match');
   }
@@ -268,6 +274,9 @@ export class MatchScene extends Phaser.Scene {
     this.spawnPlayers();
     const settings = getSave().settings;
     this.reduceMotion = settings.reduceMotion;
+    this.slowMoOn = settings.slowMo;
+    resetTimeFlow(this.timeFlow); // fresh match — no leftover slow-mo / hit-stop
+    this.timeScale = 1;
     this.sprintToggleMode = settings.sprintMode === 'toggle';
     this.sprintToggled = false;
     this.passCone =
@@ -707,6 +716,7 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vx = 0;
       this.ball.vy = 0;
       audio.play('tackle'); // physical thwock of a won challenge
+      this.requestTimeFx('tackle'); // brief hit-stop on the clean steal
       this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
@@ -768,8 +778,15 @@ export class MatchScene extends Phaser.Scene {
 
   update(_time: number, deltaMs: number): void {
     if (this.finished) return;
-    // accumulate real time (capped against a tab stall) and drain it in fixed steps
-    this.acc += Math.min(0.1, deltaMs / 1000);
+    // Presentation-side time dilation (slow-mo / hit-stop, #126). Advances by REAL
+    // time and only changes HOW FAST real time is consumed below — never the sim
+    // dt — so the fixed-timestep sim stays bit-identical (determinism / replays).
+    this.timeScale = stepTimeScale(this.timeFlow, deltaMs);
+    this.tweens.timeScale = this.timeScale; // slow tweens (banner / bloom) coherently
+    this.time.timeScale = this.timeScale; // slow delayedCalls coherently
+    // accumulate real time SCALED by timeScale, THEN apply the 0.1 backlog cap so
+    // spiral-of-death protection is unchanged (cap = max 100ms of sim per frame).
+    this.acc += Math.min(0.1, (deltaMs / 1000) * this.timeScale);
     let steps = 0;
     while (this.acc >= MatchScene.FIXED_DT && steps < MatchScene.MAX_STEPS) {
       this.stepSim(MatchScene.FIXED_DT);
@@ -1087,6 +1104,7 @@ export class MatchScene extends Phaser.Scene {
     this.kickBall(p, vx, vy);
     if (charge > 0.8) {
       this.shake(120, 0.006);
+      this.requestTimeFx('screamer'); // slow-mo as the screamer flies
       this.showBanner('SCREAMER!', C.surge, 500);
     }
     return true;
@@ -1682,6 +1700,7 @@ export class MatchScene extends Phaser.Scene {
   private scoreGoal(side: Side): void {
     if (this.state !== 'play') return;
     this.lastScorer = side;
+    this.requestTimeFx('goal'); // freeze + slow-mo on the net-hit (the firework moment)
     if (side === 'home') this.homeGoals++;
     else this.awayGoals++;
     // reward trailing team with surge reset; scoring team modest
@@ -1861,6 +1880,21 @@ export class MatchScene extends Phaser.Scene {
 
   private flash(dur: number, r: number, g: number, b: number): void {
     if (!this.reduceMotion) this.cameras.main.flash(dur, r, g, b);
+  }
+
+  // Shared time-fx trigger (#126), consumed here and by sibling juice issues.
+  // No-op under Reduce Motion or with the SLOW MOTION setting off. goal = a hard
+  // freeze then slow-mo; screamer = slow-mo only; tackle = a short hit-stop.
+  private requestTimeFx(kind: 'goal' | 'screamer' | 'tackle'): void {
+    if (this.reduceMotion || !this.slowMoOn) return;
+    if (kind === 'goal') {
+      requestHitStop(this.timeFlow, 80);
+      requestSlowMo(this.timeFlow, 0.45, 800);
+    } else if (kind === 'screamer') {
+      requestSlowMo(this.timeFlow, 0.45, 600);
+    } else {
+      requestHitStop(this.timeFlow, 80);
+    }
   }
 
   private renderEntities(): void {
@@ -2208,6 +2242,10 @@ export class MatchScene extends Phaser.Scene {
     if (this.state === 'fulltime' || this.state === 'pens') return;
     this.state = 'fulltime';
     this.camFollow = false; // hand framing to the victory beat / end-of-match overlays
+    resetTimeFlow(this.timeFlow); // end-of-match beats play at full speed
+    this.timeScale = 1;
+    this.time.timeScale = 1;
+    this.tweens.timeScale = 1;
     this.showBanner('FULL TIME', C.gold, 1600);
     audio.play('whistle');
     const knockout = this.cfg.context === 'knockout';

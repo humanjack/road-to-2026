@@ -33,6 +33,8 @@ export class SettingsScene extends Phaser.Scene {
     y += 62;
     this.toggle('REDUCE MOTION', 'reduceMotion', s.reduceMotion, lLabel, y, lCtrl);
     y += 62;
+    this.toggle('SLOW MOTION', 'slowMo', s.slowMo, lLabel, y, lCtrl);
+    y += 62;
     this.toggle('FICTIONALIZED NATIONS', 'fictionalNations', s.fictionalNations, lLabel, y, lCtrl);
 
     // --- right column: controls (accessibility / veteran depth) ---
@@ -56,7 +58,7 @@ export class SettingsScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     // Legal disclaimer block
-    const discY = 488;
+    const discY = 506;
     const g = this.add.graphics();
     g.fillStyle(C.deep, 0.85);
     g.fillRoundedRect(GAME_W / 2 - 460, discY, 920, 120, 12);

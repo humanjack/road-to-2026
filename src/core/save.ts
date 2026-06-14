@@ -18,6 +18,7 @@ function defaultSettings(): GameSettings {
     sfx: true,
     music: true,
     reduceMotion: false,
+    slowMo: true,
     muted: false,
     sprintMode: 'hold',
     passAssist: 'full',

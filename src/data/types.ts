@@ -135,6 +135,7 @@ export interface GameSettings {
   sfx: boolean;
   music: boolean;
   reduceMotion: boolean; // accessibility: disables screen shake / flashes
+  slowMo: boolean; // juice: slow-mo + hit-stop on goals / screamers / clean tackles (#126)
   muted: boolean; // master mute — silences ALL audio (sfx + music) regardless of the above
   // --- controls (defaults reproduce the original arcade feel) ---
   sprintMode: SprintMode; // hold SHIFT, or tap to toggle sprint on/off
