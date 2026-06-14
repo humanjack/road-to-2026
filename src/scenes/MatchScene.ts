@@ -143,6 +143,11 @@ const BUMP_CAP = 320; // clamp post-bump speed so a pile-up can't explode
 // goal posts (#135): collidable woodwork at the mouth corners
 const POST_R = 4; // post collision radius (px)
 const POST_RESTITUTION = 0.6; // a damped clang off the woodwork
+// match-loop pacing (#140): keep the goal beat climactic, then back to play fast
+const GOAL_FREEZE = 1.3; // sim seconds of post-goal celebration / slow-mo fill
+const GOAL_FREEZE_RM = 0.85; // reduce-motion: trimmed (no juice to hold for)
+const KICKOFF_HOLD = 0.6; // sim seconds of the kick-off set piece before play
+const GOAL_SKIP_AFTER = 0.5; // earliest the user may skip the cosmetic celebration tail
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -963,12 +968,17 @@ export class MatchScene extends Phaser.Scene {
     }
     if (this.state === 'goal') {
       this.stateTimer -= dt;
+      // let the user skip the COSMETIC celebration tail once its peak has passed (#140):
+      // only shortens the freeze, never the kickoff reset, and can't fire before the goal.
+      if (this.stateTimer < GOAL_FREEZE - GOAL_SKIP_AFTER && (this.keys.SPACE.isDown || this.keys.J.isDown)) {
+        this.stateTimer = 0;
+      }
       if (this.stateTimer <= 0) {
         const conceding: Side = this.lastScorer === 'home' ? 'away' : 'home';
         this.beginKickoff(conceding);
         this.showBanner('KICK OFF', C.cyan, 700);
         this.state = 'kickoff';
-        this.stateTimer = 0.8;
+        this.stateTimer = KICKOFF_HOLD;
       }
       return;
     }
@@ -1931,10 +1941,12 @@ export class MatchScene extends Phaser.Scene {
     this.rippleAge = 0;
     this.requestTimeFx('goal'); // freeze + slow-mo on the net-hit (the firework moment)
     this.requestZoomPunch(); // camera punch-in on the goal (#127)
-    // the scorer (or nearest scoring-side outfielder) celebrates through the goal freeze (#137)
+    // the scorer (or nearest scoring-side outfielder) celebrates for the goal freeze (#137),
+    // sized to the re-budgeted freeze so the pose fills it exactly (#140)
+    const freeze = this.reduceMotion ? GOAL_FREEZE_RM : GOAL_FREEZE;
     const goalX = side === 'home' ? this.px + this.pw : this.px;
     const celebIdx = chooseCelebrant(side, this.lastKickIdx, this.players, goalX, this.players.map((pl) => pl.x));
-    if (celebIdx >= 0) this.players[celebIdx].celebrateT = 1.5;
+    if (celebIdx >= 0) this.players[celebIdx].celebrateT = freeze;
     if (side === 'home') this.homeGoals++;
     else this.awayGoals++;
     // reward trailing team with surge reset; scoring team modest
@@ -1947,7 +1959,7 @@ export class MatchScene extends Phaser.Scene {
     this.showBanner('GOAL!', col, 1300);
     this.updateHud();
     this.state = 'goal';
-    this.stateTimer = 1.6;
+    this.stateTimer = freeze; // re-budgeted post-goal beat (#140)
     // burst of particles
     this.goalBurst(col);
     // bloom + scorer/power popup (motion only; bloom alpha capped and slightly
