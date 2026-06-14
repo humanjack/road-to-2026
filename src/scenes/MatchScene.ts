@@ -2496,10 +2496,11 @@ export class MatchScene extends Phaser.Scene {
     if (ap) {
       const ds = depthScale(ap.y, this.py, this.ph);
       this.dyn.lineStyle(3, C.gold, 1);
-      this.dyn.strokeCircle(ap.x, ap.y, (PR + 6) * ds);
-      // small arrow under active (scales + lifts with the figure's depth)
+      this.dyn.strokeCircle(ap.x, ap.y, (PR + 6) * ds); // selection ring on the ground at the feet
+      // gold chevron floating ABOVE the upright figure's head, pointing down at it
+      const headTop = ap.y - 3.55 * PR * ds;
       this.dyn.fillStyle(C.gold, 1);
-      this.dyn.fillTriangle(ap.x - 6 * ds, ap.y - (PR + 12) * ds, ap.x + 6 * ds, ap.y - (PR + 12) * ds, ap.x, ap.y - (PR + 4) * ds);
+      this.dyn.fillTriangle(ap.x - 7 * ds, headTop - 17 * ds, ap.x + 7 * ds, headTop - 17 * ds, ap.x, headTop - 5 * ds);
       this.drawStaminaNub(ap);
     }
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
@@ -2514,10 +2515,11 @@ export class MatchScene extends Phaser.Scene {
   // pulse just resolves to a steady alpha.
   private drawStaminaNub(ap: Player): void {
     if (ap.stamina >= 0.999 && !ap.sprintLock) return;
+    const ds = depthScale(ap.y, this.py, this.ph);
     const bw = 28;
     const bh = 4;
     const bx = ap.x - bw / 2;
-    const by = ap.y - PR - 22;
+    const by = ap.y - 3.55 * PR * ds - 27; // above the head + the active chevron
     this.dyn.fillStyle(C.dark, 0.6);
     this.dyn.fillRect(bx, by, bw, bh);
     const col = ap.sprintLock ? C.flare : ap.stamina > 0.5 ? C.lime : ap.stamina > 0.25 ? C.gold : C.flare;
@@ -2525,135 +2527,138 @@ export class MatchScene extends Phaser.Scene {
     this.dyn.fillRect(bx, by, bw * Math.max(0, ap.stamina), bh);
   }
 
-  // A top-down footballer drawn in local space (forward = +x), then placed and
-  // rotated to the player's smoothed facing. Arms/legs slide fore/aft in a
-  // contralateral gait whose amplitude scales with speed; reduce-motion freezes
-  // the swing (the figure still turns to face its heading — orientation, not
-  // motion decoration). Everything is in units of PR so it scales with the body.
+  // An upright "billboard" footballer (broadcast tilt): the figure STANDS at its
+  // feet (the sim ground point p.x,p.y) and rises up-screen, so the angled view
+  // shows the player's body and face — not the top of the head. Facing is a
+  // left/right mirror + a front/back head + a lean into lateral travel; the gait
+  // strides the legs and swings the arms contralaterally. Poses (kick/slide/dive/
+  // celebrate) reshape the same figure. Render-only — reads sim output, mutates no
+  // sim state. Everything is in units of PR so the figure scales with depthScale.
   private drawPlayer(p: Player): void {
     // a single non-finite coord would poison the whole batched Graphics (one bad
     // translateCanvas blanks every figure), so skip a corrupted player outright
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
-    // Surge-reactive cadence (#138): per-side run-cycle phase + amplitude factor
     const home = p.side === 'home';
     const runT = this.reduceMotion ? 0 : home ? this.runPhaseHome : this.runPhaseAway;
     const cad = home ? this.cadenceHome : this.cadenceAway;
-    // smooth the facing so quick AI re-targets / near-target velocity zeroing
-    // don't make the figure twitch or spin in place
-    const fl = Math.hypot(p.faceX, p.faceY) || 1;
-    const target = Math.atan2(p.faceY / fl, p.faceX / fl);
-    if (!Number.isFinite(p.renderAng)) p.renderAng = target; // recover from a bad angle
-    const dA = Phaser.Math.Angle.Wrap(target - p.renderAng);
+
+    // smoothed facing (orientation cue only; the figure itself stays upright)
+    const flen = Math.hypot(p.faceX, p.faceY) || 1;
+    const tgt = Math.atan2(p.faceY / flen, p.faceX / flen);
+    if (!Number.isFinite(p.renderAng)) p.renderAng = tgt;
+    const dA = Phaser.Math.Angle.Wrap(tgt - p.renderAng);
     p.renderAng = Phaser.Math.Angle.Wrap(p.renderAng + dA * (this.reduceMotion ? 1 : 0.3));
+    const cos = Math.cos(p.renderAng); // +right / −left
+    const sin = Math.sin(p.renderAng); // +toward camera (down) / −away (up)
 
     const speed = Math.hypot(p.vx, p.vy);
-    // reduceMotion freezes the run swing (gait 0); committed poses still render.
-    // The surge cadence widens the swing for a surging side (amplitude, #138).
-    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad; // 200 ≈ base playerSpeed
-
-    // Pick the active pose from the player's sim-ticked countdowns (#137); 'run' uses
-    // the continuous clock, the rest a 0..1 progress. limbPose('run') is the exact
-    // original swing, so jogging figures are unchanged.
+    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad;
     const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT);
-    const pose = limbPose(sel.action, sel.action === 'run' ? runT : sel.t, gait, p.phase, PR, this.poseScratch);
-    // celebrate hop: a vertical bounce on the goal beat (frozen under reduceMotion);
-    // figure only — the shadow stays grounded so it reads as a jump
-    const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.5 * PR : 0;
+    const ds = depthScale(p.y, this.py, this.ph);
+    // celebrate hop lifts the whole figure (shadow stays grounded → reads as a jump)
+    const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.8 * PR : 0;
 
-    // body-lean into a hard cut (#129): over-rotate slightly toward the velocity↔facing
-    // lag, eased in place. Pure visual — gated by reduceMotion (leanAng decays to 0).
-    let leanTarget = 0;
-    if (!this.reduceMotion && speed > 50) {
-      const d = Phaser.Math.Angle.Wrap(Math.atan2(p.vy, p.vx) - p.renderAng);
-      leanTarget = Phaser.Math.Clamp(d * 0.5, -MAX_LEAN, MAX_LEAN);
-    }
-    p.leanAng += (leanTarget - p.leanAng) * 0.3; // ease / decay in place
+    const U = PR;
+    const mirror = cos < -0.02 ? -1 : 1; // facing left → mirror the whole figure
+    const horiz = Math.abs(cos); // how lateral the run is (0 = straight toward/away)
+    const backView = sin < -0.4; // running away → show the back of the head
+    const lean = (speed > 40 ? 0.5 : 0.2) * horiz * U; // upper-body lean into travel
+    const leanAt = (h: number) => (lean * -h) / (3.0 * U); // lean grows toward the head
 
-    // squash-stretch (#131): along-facing acceleration this frame (render-derived,
-    // no sim state touched) + the power-scaled kick impulse → a brief scale pop.
-    // Gated by reduceMotion. The accel uses the real (unscaled) frame dt.
-    const fx = Math.cos(p.renderAng);
-    const fy = Math.sin(p.renderAng);
-    const idt = 1 / Math.max(1 / 240, this.realDtSec);
-    const accelAlong = ((p.vx - p.pvx) * fx + (p.vy - p.pvy) * fy) * idt;
-    p.pvx = p.vx;
-    p.pvy = p.vy;
-    const sq = this.reduceMotion ? null : squashStretch(accelAlong, p.kickPop, this.squashScratch);
+    // gait + committed-pose amplitudes
+    const sw = (this.reduceMotion ? 0 : Math.sin(runT * 2 + p.phase)) * gait * 0.85 * U; // stride swing
+    const kickP = sel.action === 'kick' ? Phaser.Math.Clamp(sel.t, 0, 1) : 0;
+    const grounded = sel.action === 'slide' || sel.action === 'dive';
+    const armsUp = sel.action === 'celebrate' || (p.role === 'GK' && sel.action === 'dive');
+
+    const isGK = p.role === 'GK';
+    const skinArm = this.shade(p.skin, 0.96);
 
     const g = this.bodyGfx;
     g.save();
-    // shared figure transform order (#137): translate → rotate(+cut-lean #129) → pose-lean
-    // → crouch → [depthScale #128] → [squash #131] → limbs/torso
     g.translateCanvas(p.x, p.y - hop);
-    g.rotateCanvas(p.renderAng + p.leanAng);
-    if (pose.lean !== 0) g.translateCanvas(pose.lean, 0); // forward shift along facing
-    if (pose.crouch !== 1) g.scaleCanvas(1, pose.crouch); // lay low for a slide / dive
-    // scale-for-depth (#128): gentle broadcast perspective, clamped [0.88,1.12]
-    const ds = depthScale(p.y, this.py, this.ph);
     g.scaleCanvas(ds, ds);
-    // squash-stretch (#131): the single figure scale channel, at the squash slot
-    if (sq && (sq.sx !== 1 || sq.sy !== 1)) g.scaleCanvas(sq.sx, sq.sy);
-
-    // limbs first (under the torso), offset per the active pose, contralateral
-    if (p.role === 'GK') {
-      // keeper silhouette (#138): glove-arms spread WIDE + reaching, with bright
-      // mitts, so a keeper reads by SHAPE not just kit colour (an accessibility win
-      // on top of the centre-dot identity). Pose offsets still apply, so a dive
-      // (#137) throws the gloves laterally and a set keeper holds them out.
-      this.drawLimb(g, -0.18 * PR, 0.28 * PR, 0.7 * PR, 0.34 * PR, pose.farLeg * 0.6, p.shorts); // planted legs
-      this.drawLimb(g, -0.18 * PR, -0.28 * PR, 0.7 * PR, 0.34 * PR, pose.nearLeg * 0.6, p.shorts);
-      this.drawLimb(g, 0.32 * PR, 1.02 * PR, 0.82 * PR, 0.3 * PR, pose.farArm * 0.6, p.skin); // wide far glove-arm
-      this.drawLimb(g, 0.32 * PR, -1.02 * PR, 0.82 * PR, 0.3 * PR, pose.nearArm * 0.6, p.skin); // wide near glove-arm
-      g.fillStyle(C.light, 1); // bright glove mitts at the reaching hand ends
-      g.fillCircle(0.7 * PR + pose.farArm * 0.6, 1.02 * PR, 0.28 * PR);
-      g.fillCircle(0.7 * PR + pose.nearArm * 0.6, -1.02 * PR, 0.28 * PR);
-    } else {
-      this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg
-      this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, pose.nearLeg, p.shorts); // near leg
-      this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, pose.farArm, p.skin); // far arm
-      this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, pose.nearArm, p.skin); // near arm
+    if (mirror < 0) g.scaleCanvas(-1, 1); // draw facing right; mirror to face left
+    if (grounded) {
+      g.rotateCanvas(-0.95); // tip forward into a slide / dive
+      g.translateCanvas(0.35 * U, -0.1 * U);
     }
 
-    // hips (shorts) then torso (kit) — torso is wider across the shoulders (y)
-    g.fillStyle(p.shorts, 1);
-    g.fillEllipse(-0.15 * PR, 0, 1.15 * PR, 1.3 * PR);
-    g.fillStyle(p.kit, 1);
-    g.fillEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
-    // contrast rim so dark kits keep a crisp edge against the pitch; the surging
-    // side's rim brightens slightly (#138 tint) — render-only, steady under
-    // reduceMotion (surge is sim state, not a time pulse).
-    const surgeSide = home ? this.surgeHome : this.surgeAway;
-    g.lineStyle(1.5, p.rim, 0.5 + 0.35 * Phaser.Math.Clamp(surgeSide / 100, 0, 1));
-    g.strokeEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
-    // shoulder caps — lightened kit, a cheap fake top-light that gives the torso form
-    g.fillStyle(p.shoulderHi, 1);
-    g.fillCircle(0.15 * PR, 0.6 * PR, 0.32 * PR);
-    g.fillCircle(0.15 * PR, -0.6 * PR, 0.32 * PR);
+    // ---- heights (feet at 0, up = −y) ----
+    const hipY = -1.0 * U;
+    const shoulderY = isGK ? -2.45 * U : -2.3 * U;
+    const headCY = isGK ? -2.95 * U : -2.8 * U;
+    const headR = (isGK ? 0.58 : 0.55) * U;
 
-    // hair crown behind, head forward of torso centre, nose nub at the very front:
-    // three redundant "which way is he facing" cues
-    g.fillStyle(p.hair, 1);
-    g.fillCircle(0.3 * PR, 0, 0.44 * PR);
+    // ---- legs (shorts thighs to boots), contralateral stride ----
+    const legW = 0.46 * U;
+    const legX = 0.33 * U;
+    const backLegX = -legX + sw * 0.45;
+    const frontLegX = legX - sw * 0.45;
+    const backFootY = -Math.max(0, sw) * 0.55; // trailing foot lifts on the back swing
+    const frontFootY = -Math.max(0, -sw) * 0.55 - kickP * 1.15 * U; // lead foot, or a kick swing up
+    this.vLimb(g, backLegX, hipY, backFootY, legW, p.shorts);
+    this.vLimb(g, frontLegX, hipY, frontFootY, legW, p.shorts);
+    g.fillStyle(C.deep, 1); // boots
+    g.fillEllipse(backLegX + 0.14 * U, backFootY + 0.02 * U, 0.52 * U, 0.3 * U);
+    g.fillEllipse(frontLegX + 0.14 * U, frontFootY + 0.02 * U, 0.52 * U, 0.3 * U);
+
+    // ---- far arm (behind the torso) swings opposite the near leg ----
+    const armW = 0.32 * U;
+    const armX = 0.6 * U;
+    const armTop = shoulderY + 0.12 * U;
+    const farArmEnd = armsUp ? shoulderY - 1.05 * U : hipY - 0.05 * U + sw * 0.4;
+    this.vLimb(g, -armX + leanAt(armTop), armTop, farArmEnd + leanAt(farArmEnd), armW, skinArm);
+
+    // ---- torso (jersey) + shorts block ----
+    const tTop = shoulderY;
+    const tBot = -1.12 * U;
+    const sx = leanAt((tTop + tBot) / 2);
+    g.fillStyle(p.kit, 1);
+    g.fillRoundedRect(-0.74 * U + sx, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
+    g.fillStyle(p.shorts, 1);
+    g.fillRoundedRect(-0.68 * U + leanAt(tBot), tBot - 0.12 * U, 1.36 * U, 0.66 * U, 0.24 * U);
+    g.lineStyle(1.5, p.rim, 0.55); // crisp edge for dark kits on the turf
+    g.strokeRoundedRect(-0.74 * U + sx, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
+    g.fillStyle(p.shoulderHi, 1); // lightened shoulder band — fake top-light
+    g.fillRoundedRect(-0.74 * U + leanAt(tTop), tTop, 1.48 * U, 0.36 * U, 0.18 * U);
+
+    // ---- near arm (in front of the torso) ----
+    const nearArmEnd = armsUp ? shoulderY - 1.05 * U : hipY - 0.05 * U - sw * 0.4;
+    this.vLimb(g, armX + leanAt(armTop), armTop, nearArmEnd + leanAt(nearArmEnd), armW, p.skin);
+
+    // keeper gloves at the hand ends
+    if (isGK) {
+      g.fillStyle(C.light, 1);
+      g.fillCircle(-armX + leanAt(farArmEnd), farArmEnd, 0.27 * U);
+      g.fillCircle(armX + leanAt(nearArmEnd), nearArmEnd, 0.27 * U);
+    }
+
+    // ---- head: skin dome + hair; front shows a face, back is all hair ----
+    const hx = leanAt(headCY);
     g.fillStyle(p.skin, 1);
-    g.fillCircle(0.44 * PR, 0, 0.48 * PR);
-    g.fillTriangle(0.94 * PR, 0, 0.8 * PR, 0.11 * PR, 0.8 * PR, -0.11 * PR);
+    g.fillCircle(hx, headCY, headR);
+    g.fillStyle(p.hair, 1);
+    if (backView) {
+      g.fillCircle(hx, headCY, headR); // back of the head: all hair
+    } else {
+      // hair crown over the top ~55% of the head
+      g.fillRoundedRect(hx - headR, headCY - headR, headR * 2, headR * 1.05, headR * 0.55);
+      g.fillStyle(C.deep, 0.16); // brow shadow → reads as a forward-facing face
+      g.fillEllipse(hx + headR * 0.5, headCY + headR * 0.12, headR * 0.55, headR * 0.6);
+    }
 
     g.restore();
   }
 
-  // A leg/arm as a rounded capsule oriented along the facing axis, offset
-  // fore/aft by `offX` for the run cycle. Drawn in the body's local frame.
-  private drawLimb(
-    g: Phaser.GameObjects.Graphics,
-    baseX: number,
-    baseY: number,
-    len: number,
-    w: number,
-    offX: number,
-    color: number,
-  ): void {
+  // A vertical limb capsule between (cx, aY) and (cx, bY) — the upright figure's
+  // legs and arms. Order-independent in y, so a raised arm (end above the
+  // shoulder) draws correctly. Local frame, up = −y.
+  private vLimb(g: Phaser.GameObjects.Graphics, cx: number, aY: number, bY: number, w: number, color: number): void {
+    const topY = Math.min(aY, bY);
+    const h = Math.abs(aY - bY);
     g.fillStyle(color, 1);
-    g.fillRoundedRect(baseX + offX - len / 2, baseY - w / 2, len, w, Math.min(len, w) * 0.49);
+    g.fillRoundedRect(cx - w / 2, topY, w, h, Math.min(w, h) * 0.49);
   }
 
   // Three-zone charge bar — weak (0-40%, dim) / strong (40-80%, cyan) /
