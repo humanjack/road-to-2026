@@ -15,6 +15,7 @@ import {
   POKE_REACH,
   SLIDE_REACH,
   choosePassTarget,
+  throughBallLead,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -356,5 +357,26 @@ describe('choosePassTarget', () => {
   it('ignores a zero-length aim and an empty mate list', () => {
     expect(choosePassTarget(0, 0, 0, 0, mates, PASS_CONE.full, 1)).toBe(-1);
     expect(choosePassTarget(0, 0, 1, 0, [], PASS_CONE.full, 1)).toBe(-1);
+  });
+
+  it('a strong forward bias prefers a more advanced mate over a perfectly-aligned closer one', () => {
+    // aim straight right; mate A dead-ahead but close, mate B further upfield, slightly off-axis
+    const pair: PassMate[] = [
+      { x: 120, y: 0, vx: 0, vy: 0 }, // dead-ahead, close
+      { x: 480, y: 60, vx: 0, vy: 0 }, // much further forward, ~7° off
+    ];
+    expect(choosePassTarget(0, 0, 1, 0, pair, PASS_CONE.full, 1, 3)).toBe(1);
+  });
+});
+
+describe('throughBallLead', () => {
+  it('leads ahead of the runner along their run and toward the attacking goal', () => {
+    const r = throughBallLead(100, 100, 60, 0, 1); // running, attacking +x
+    expect(r.x).toBeGreaterThan(100 + 60 * 0.4); // ahead of run + goal lead
+    expect(r.y).toBeCloseTo(100, 5);
+  });
+  it('respects attack direction (away team attacks -x)', () => {
+    const r = throughBallLead(100, 100, 0, 0, -1);
+    expect(r.x).toBeLessThan(100); // led toward -x goal
   });
 });

@@ -343,3 +343,20 @@ export function choosePassTarget(
   }
   return best;
 }
+
+/**
+ * Where to play a through-ball: ahead of the runner along their run *and* a step
+ * further toward the attacking goal, so it leads them into space behind the line
+ * rather than to their feet. Caller clamps the result to the pitch.
+ */
+export function throughBallLead(
+  mx: number,
+  my: number,
+  mvx: number,
+  mvy: number,
+  attackDir: number,
+  runLead = 0.45,
+  goalLead = 80,
+): { x: number; y: number } {
+  return { x: mx + mvx * runLead + attackDir * goalLead, y: my + mvy * runLead };
+}
