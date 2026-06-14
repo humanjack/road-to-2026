@@ -149,6 +149,7 @@ const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / sc
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
+const SPRINT_THRUST = 0.6; // forward-stretch impulse fed to the squashStretch channel on sprint kick-in (#144)
 // body-bump (#130): a closing speed above the threshold exchanges momentum
 const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
 const BUMP_TRANSFER = 0.4; // fraction of the closing speed exchanged
@@ -1219,6 +1220,21 @@ export class MatchScene extends Phaser.Scene {
     this.tweens.add({ targets: d, scale: 1.9, alpha: 0, duration: 360, onComplete: () => d.destroy() });
   }
 
+  // One-shot "gear change" dust at the heels on the sprint kick-in (#144) — denser,
+  // bigger, and brighter than the steady sprint drip so engaging top gear reads as
+  // a burst. Fires once per engagement (rising edge); reduceMotion-gated, flash-free.
+  private fxSprintBurst(x: number, y: number): void {
+    if (this.reduceMotion) return;
+    for (let k = 0; k < 5; k++) {
+      const d = this.onWorld(
+        this.add
+          .circle(x + this.rng.range(-7, 7), y + this.rng.range(-5, 7), this.rng.range(3, 6), 0xcfcad6, 0.55)
+          .setDepth(8),
+      );
+      this.tweens.add({ targets: d, scale: 2.4, alpha: 0, duration: 420, ease: 'Quad.easeOut', onComplete: () => d.destroy() });
+    }
+  }
+
   private fxSkid(x: number, y: number, ang: number): void {
     const s = this.onWorld(this.add.rectangle(x, y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang));
     this.tweens.add({ targets: s, alpha: 0, duration: 320, onComplete: () => s.destroy() });
@@ -1288,7 +1304,15 @@ export class MatchScene extends Phaser.Scene {
     const st = stepStamina(p.stamina, sprinting, p.sprintLock, dt);
     p.stamina = st.stamina;
     p.sprintLock = st.locked;
-    if (sprinting && !p.sprinting) audio.play('sprint'); // whoosh on the sprint rising edge
+    if (sprinting && !p.sprinting) {
+      audio.play('sprint'); // whoosh on the sprint rising edge
+      // gear-change tell (#144): a forward thrust through the SINGLE squashStretch
+      // channel (reuses kickPop, the helper's forward-impulse input — no second
+      // scale system) + a punchier one-shot heel dust burst, fired once per engage.
+      p.kickPop = Math.max(p.kickPop, SPRINT_THRUST);
+      const sp = Math.hypot(p.vx, p.vy) || 1;
+      this.fxSprintBurst(p.x - (p.vx / sp) * PR, p.y - (p.vy / sp) * PR);
+    }
     p.sprinting = sprinting; // drives the ball knock-on while carrying (read in updateBall)
     const speedMul = sprinting ? SPRINT_SPEED_MUL : 1;
     const accel = sprinting ? PLAYER_ACCEL * SPRINT_ACCEL_MUL : PLAYER_ACCEL;
