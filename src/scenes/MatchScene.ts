@@ -18,13 +18,17 @@ import {
   DRIBBLE_SPEED_MUL,
   bufferConsumable,
   bufferExpired,
+  isOneTouch,
   INPUT_BUFFER_MS,
   tackleOutcome,
   ballExposure,
   POKE_REACH,
   SLIDE_REACH,
+  choosePassTarget,
+  PASS_CONE,
   type BufferedInput,
   type TackleResult,
+  type PassMate,
 } from '../core/movement';
 import { audio } from '../core/audio';
 
@@ -803,27 +807,50 @@ export class MatchScene extends Phaser.Scene {
   private doPass(): boolean {
     const p = this.players[this.activeIdx];
     if (!p || this.ball.ownerIdx !== this.activeIdx) return false;
-    // nearest teammate ahead (toward attacking goal)
-    let best = -1;
-    let bestScore = -Infinity;
+    // gather home outfield mates (keep their real indices for setActive)
+    const mateIdx: number[] = [];
+    const mates: PassMate[] = [];
     this.players.forEach((t, i) => {
       if (t.side !== 'home' || i === this.activeIdx || t.role === 'GK') return;
-      const ahead = t.x - p.x; // home attacks +x
-      const d = dist(p.x, p.y, t.x, t.y);
-      const score = ahead * 1.5 - d;
-      if (score > bestScore) {
-        bestScore = score;
-        best = i;
-      }
+      mateIdx.push(i);
+      mates.push({ x: t.x, y: t.y, vx: t.vx, vy: t.vy });
     });
-    if (best < 0) return false;
-    const t = this.players[best];
-    const dx = t.x - p.x;
-    const dy = t.y - p.y;
+    if (!mates.length) return false;
+    // assist: pick the mate inside the aim cone (aim = facing). Falls back to
+    // the most-advanced mate so a press is never wasted.
+    let sel = choosePassTarget(p.x, p.y, p.faceX, p.faceY, mates, PASS_CONE.full, 1);
+    if (sel < 0) {
+      let best = -1;
+      let bestScore = -Infinity;
+      mates.forEach((m, k) => {
+        const score = (m.x - p.x) * 1.5 - dist(p.x, p.y, m.x, m.y);
+        if (score > bestScore) {
+          bestScore = score;
+          best = k;
+        }
+      });
+      sel = best;
+    }
+    if (sel < 0) return false;
+    const targetIdx = mateIdx[sel];
+    const t = this.players[targetIdx];
+    // lead the receiver slightly into space along their run, clamped in-bounds
+    const lead = 0.22;
+    const tx = Phaser.Math.Clamp(t.x + t.vx * lead, this.px + BR, this.px + this.pw - BR);
+    const ty = Phaser.Math.Clamp(t.y + t.vy * lead, this.py + BR, this.py + this.ph - BR);
+    const dx = tx - p.x;
+    const dy = ty - p.y;
     const len = Math.hypot(dx, dy) || 1;
-    const power = Math.min(640, 300 + len * 1.4);
+    let power = Math.min(640, 300 + len * 1.4);
+    // one-touch: passing within the receive window adds zip + a style callout +
+    // a small Surge nudge (the GDD rhythm engine; uses the #94 receive ref).
+    if (this.lastReceiveAt >= 0 && isOneTouch(this.lastReceiveAt, this.time.now)) {
+      power = Math.min(720, power * 1.15);
+      this.showBanner('ONE-TOUCH!', C.cyan, 450);
+      this.surgeHome = Math.min(100, this.surgeHome + 4);
+    }
     this.kickBall(p, (dx / len) * power, (dy / len) * power);
-    this.setActive(best);
+    this.setActive(targetIdx);
     return true;
   }
 

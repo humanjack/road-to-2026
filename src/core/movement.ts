@@ -282,3 +282,64 @@ export function tackleOutcome(p: TackleParams): TackleResult {
   }
   return 'miss';
 }
+
+// --- passing ---------------------------------------------------------------
+//
+// A pass should go to the team-mate you *mean* — the one best aligned with your
+// aim inside an assist cone — not a fixed "most-advanced" heuristic. Tighter
+// cones (semi/manual, #105) demand more precision; the widest is the casual
+// default. Through-balls (#97) reuse the same selector with a forward bias.
+
+export interface PassMate {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+/** Assist cone half-angles as cosines (cos of the half-angle): wider = more help. */
+export const PASS_CONE = {
+  full: Math.cos((60 * Math.PI) / 180), // ±60° — casual / touch default
+  semi: Math.cos((32 * Math.PI) / 180), // ±32°
+  manual: Math.cos((14 * Math.PI) / 180), // ±14° — near pure stick aim
+};
+
+/**
+ * Pick the best team-mate to receive a pass: among those inside the aim cone,
+ * prefer the one most aligned with the aim, with light tie-breaks for forward
+ * progress and proximity. Returns the index into `mates`, or -1 if the cone is
+ * empty (caller should fall back so a press is never wasted).
+ */
+export function choosePassTarget(
+  fromX: number,
+  fromY: number,
+  aimX: number,
+  aimY: number,
+  mates: PassMate[],
+  coneCos: number,
+  attackDir: number,
+  forwardBias = 0,
+): number {
+  const al = Math.hypot(aimX, aimY);
+  if (al === 0) return -1;
+  const ax = aimX / al;
+  const ay = aimY / al;
+  let best = -1;
+  let bestScore = -Infinity;
+  for (let i = 0; i < mates.length; i++) {
+    const m = mates[i];
+    const dx = m.x - fromX;
+    const dy = m.y - fromY;
+    const d = Math.hypot(dx, dy);
+    if (d < 1) continue;
+    const cos = (dx / d) * ax + (dy / d) * ay; // alignment with aim, -1..1
+    if (cos < coneCos) continue; // outside the cone
+    const ahead = (dx * attackDir) / 600; // forward progress, normalized-ish
+    const score = cos * 2 + ahead * (1 + forwardBias) - d / 2000;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
