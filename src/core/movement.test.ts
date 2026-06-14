@@ -47,6 +47,12 @@ import {
   loftLaunch,
   segmentBlocked,
   LOFT_GRAVITY,
+  squashStretch,
+  isHardStop,
+  SQUASH_MIN,
+  SQUASH_MAX,
+  ACCEL_DEADZONE,
+  type Squash,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -885,5 +891,82 @@ describe('stepCurve (in-flight bend)', () => {
     const out: CurveState = { vx: 0, vy: 0, curve: 0 };
     const r = stepCurve(500, 0, 900, 1 / 60, out);
     expect(r).toBe(out);
+  });
+});
+
+describe('squashStretch (#131 the single figure scale channel)', () => {
+  const out: Squash = { sx: 1, sy: 1 };
+
+  it('is neutral (1,1) at zero accel and zero kick', () => {
+    const r = squashStretch(0, 0, out);
+    expect(r.sx).toBe(1);
+    expect(r.sy).toBe(1);
+  });
+
+  it('stays neutral inside the cruise deadzone (small accel ⇒ no pop)', () => {
+    const r = squashStretch(ACCEL_DEADZONE - 1, 0, out);
+    expect(r.sx).toBe(1);
+    expect(r.sy).toBe(1);
+  });
+
+  it('stretches along facing (sx>1, sy<1) on a burst', () => {
+    const r = squashStretch(1400, 0, out);
+    expect(r.sx).toBeGreaterThan(1);
+    expect(r.sy).toBeLessThan(1);
+  });
+
+  it('squashes (sx<1, sy>1) on a hard plant-stop', () => {
+    const r = squashStretch(-2200, 0, out);
+    expect(r.sx).toBeLessThan(1);
+    expect(r.sy).toBeGreaterThan(1);
+  });
+
+  it('stretches forward on a kick impulse and scales with kick power', () => {
+    const tap = squashStretch(0, 0.2, { sx: 1, sy: 1 });
+    const screamer = squashStretch(0, 1, { sx: 1, sy: 1 });
+    expect(tap.sx).toBeGreaterThan(1);
+    expect(screamer.sx).toBeGreaterThan(tap.sx); // power-scaled
+    expect(screamer.sy).toBeLessThan(1);
+  });
+
+  it('is symmetric about (1,1): +a and -a mirror around neutral', () => {
+    const up = squashStretch(3000, 0, { sx: 1, sy: 1 });
+    const dn = squashStretch(-3000, 0, { sx: 1, sy: 1 });
+    expect(up.sx - 1).toBeCloseTo(-(dn.sx - 1), 6);
+    expect(up.sy - 1).toBeCloseTo(-(dn.sy - 1), 6);
+  });
+
+  it('clamps within [SQUASH_MIN, SQUASH_MAX] for arbitrarily large inputs', () => {
+    for (const [a, k] of [[1e9, 1e9], [-1e9, 0], [0, 1e9], [-1e9, 1e9]] as [number, number][]) {
+      const r = squashStretch(a, k, out);
+      expect(r.sx).toBeGreaterThanOrEqual(SQUASH_MIN);
+      expect(r.sx).toBeLessThanOrEqual(SQUASH_MAX);
+      expect(r.sy).toBeGreaterThanOrEqual(SQUASH_MIN);
+      expect(r.sy).toBeLessThanOrEqual(SQUASH_MAX);
+    }
+  });
+
+  it('composed with depthScale [0.88,1.12] never inverts/balloons the silhouette', () => {
+    const r = squashStretch(1e9, 1e9, out); // max stretch
+    for (const ds of [0.88, 1.0, 1.12]) {
+      expect(r.sx * ds).toBeGreaterThan(0.5); // never inverted/collapsed
+      expect(r.sx * ds).toBeLessThan(1.4); // never ballooned
+      expect(r.sy * ds).toBeGreaterThan(0.5);
+      expect(r.sy * ds).toBeLessThan(1.4);
+    }
+  });
+
+  it('returns the out object (allocation-free) and guards non-finite input', () => {
+    const r = squashStretch(NaN, NaN, out);
+    expect(r).toBe(out);
+    expect(r.sx).toBe(1);
+    expect(r.sy).toBe(1);
+  });
+
+  it('isHardStop classifies a large per-step decel as an impact, small ones as none', () => {
+    expect(isHardStop(-2200)).toBe(true);
+    expect(isHardStop(-100)).toBe(false);
+    expect(isHardStop(2200)).toBe(false); // accel, not a stop
+    expect(isHardStop(NaN)).toBe(false);
   });
 });
