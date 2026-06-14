@@ -35,6 +35,7 @@ import {
   chooseSwitchTarget,
   assignMarks,
   markPoint,
+  shotPower01,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -576,7 +577,7 @@ export class MatchScene extends Phaser.Scene {
       this.ballCarryAng = Math.atan2(t.faceY, t.faceX);
       this.ball.vx = 0;
       this.ball.vy = 0;
-      audio.play('save');
+      audio.play('tackle'); // physical thwock of a won challenge
       this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
@@ -584,7 +585,7 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vy = (this.ball.y - carrier.y) * 6;
       this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
       this.kickCooldown = 0.12;
-      audio.play('kick');
+      audio.play('tackle');
       this.fxBurst(this.ball.x, this.ball.y, C.light);
     } else if (slide) {
       t.recovery = 0.5; // whiffed slide → grounded (the risk)
@@ -872,6 +873,7 @@ export class MatchScene extends Phaser.Scene {
     const st = stepStamina(p.stamina, sprinting, p.sprintLock, dt);
     p.stamina = st.stamina;
     p.sprintLock = st.locked;
+    if (sprinting && !p.sprinting) audio.play('sprint'); // whoosh on the sprint rising edge
     p.sprinting = sprinting; // drives the ball knock-on while carrying (read in updateBall)
     const speedMul = sprinting ? SPRINT_SPEED_MUL : 1;
     const accel = sprinting ? PLAYER_ACCEL * SPRINT_ACCEL_MUL : PLAYER_ACCEL;
@@ -1064,7 +1066,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.y = from.y + (vy / len) * (PR + BR + 2);
     this.lastKickIdx = this.players.indexOf(from);
     this.kickCooldown = 0.18;
-    audio.play('kick');
+    audio.playKick(shotPower01(len)); // power-scaled thwock: a screamer hits harder than a tap
   }
 
   private lastKickIdx = -1;

@@ -25,6 +25,7 @@ import {
   chooseSwitchTarget,
   assignMarks,
   markPoint,
+  shotPower01,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -535,5 +536,18 @@ describe('markPoint', () => {
     expect(p.x).toBeLessThan(700); // toward our goal
     expect(p.x).toBeGreaterThan(64);
     expect(p.y).toBeCloseTo(360, 5);
+  });
+});
+
+describe('shotPower01', () => {
+  it('maps a tap pass low and a screamer near 1, monotonically, clamped', () => {
+    const tap = shotPower01(320);
+    const screamer = shotPower01(980);
+    expect(tap).toBeGreaterThan(0);
+    expect(tap).toBeLessThan(screamer);
+    expect(screamer).toBeCloseTo(1, 5);
+    expect(shotPower01(5000)).toBe(1); // clamped
+    expect(shotPower01(-10)).toBe(0);
+    expect(shotPower01(NaN)).toBe(0);
   });
 });

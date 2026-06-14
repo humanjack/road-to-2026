@@ -553,3 +553,14 @@ export function markPoint(
   const L = Math.hypot(dx, dy) || 1;
   return { x: attackerX + (dx / L) * standoff, y: attackerY + (dy / L) * standoff };
 }
+
+// --- audio mapping ---------------------------------------------------------
+
+/**
+ * Normalise a kick/shot speed (px/s) to a 0..1 strike strength for the
+ * power-scaled "thwock" sfx. A tap pass lands low, a full screamer at ~1.
+ */
+export function shotPower01(speed: number, maxPower = 980): number {
+  if (!Number.isFinite(speed) || maxPower <= 0) return 0;
+  return Math.min(1, Math.max(0, speed / maxPower));
+}
