@@ -23,6 +23,8 @@ import {
   saveOutcome,
   SAVE_REACH,
   chooseSwitchTarget,
+  assignMarks,
+  markPoint,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -490,5 +492,48 @@ describe('chooseSwitchTarget', () => {
   it('skips the current player and returns -1 when no other candidate exists', () => {
     const cands = [{ x: 500, y: 360 }];
     expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, 0)).toBe(-1);
+  });
+});
+
+describe('assignMarks', () => {
+  it('is one-to-one: no attacker is marked twice, no defender marks twice', () => {
+    const defenders = [
+      { x: 100, y: 100 },
+      { x: 100, y: 300 },
+      { x: 100, y: 500 },
+    ];
+    const attackers = [
+      { x: 120, y: 110 }, // closest to def 0
+      { x: 120, y: 310 }, // closest to def 1
+      { x: 120, y: 510 }, // closest to def 2
+    ];
+    const marks = assignMarks(defenders, attackers);
+    const assigned = marks.filter((m) => m >= 0);
+    expect(new Set(assigned).size).toBe(assigned.length); // no attacker marked twice
+    expect(marks).toEqual([0, 1, 2]);
+  });
+
+  it('the most-dangerous attacker (passed first) gets the nearest defender even amid contention', () => {
+    const defenders = [{ x: 200, y: 200 }]; // only one defender
+    const attackers = [
+      { x: 210, y: 205 }, // danger #1 (first) — should be marked
+      { x: 205, y: 200 }, // even closer but lower priority
+    ];
+    const marks = assignMarks(defenders, attackers);
+    expect(marks[0]).toBe(0); // the first (most dangerous) attacker
+  });
+
+  it('leaves spare defenders unmarked when defenders outnumber attackers', () => {
+    const marks = assignMarks([{ x: 0, y: 0 }, { x: 50, y: 0 }], [{ x: 10, y: 0 }]);
+    expect(marks.filter((m) => m >= 0).length).toBe(1); // one marks, one is spare (cover)
+  });
+});
+
+describe('markPoint', () => {
+  it('sits goal-side of the attacker (between attacker and our goal)', () => {
+    const p = markPoint(700, 360, 64, 360, 42); // our goal at x=64 (left)
+    expect(p.x).toBeLessThan(700); // toward our goal
+    expect(p.x).toBeGreaterThan(64);
+    expect(p.y).toBeCloseTo(360, 5);
   });
 });
