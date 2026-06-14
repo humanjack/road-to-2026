@@ -5,7 +5,7 @@
 
 import { getSave, updateSettings } from './save';
 
-type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint';
+type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint' | 'whiff';
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -22,6 +22,13 @@ class AudioManager {
   private step = 0;
   private intensity = 0; // 0..1
   private musicPlaying = false;
+
+  // crowd bed (#134): one persistent filtered-noise voice whose level + cutoff
+  // track the Surge meter, so the stadium "breathes brighter" as momentum builds.
+  private crowdGain: GainNode | null = null;
+  private crowdSrc: AudioBufferSourceNode | null = null;
+  private crowdFilter: BiquadFilterNode | null = null;
+  private crowdLevel = 0; // last requested 0..1 (smoothed in the gain ramp)
 
   // Chord progression (root midi notes) the arpeggio walks through.
   private readonly progression = [57, 60, 53, 55]; // Am - C - F - G feel
@@ -41,6 +48,9 @@ class AudioManager {
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = 0.0;
       this.musicGain.connect(this.master);
+      this.crowdGain = this.ctx.createGain();
+      this.crowdGain.gain.value = 0.0;
+      this.crowdGain.connect(this.master);
       this.noiseBuf = this.makeNoise(0.6);
     } catch {
       this.ctx = null;
@@ -166,6 +176,10 @@ class AudioManager {
         // soft filtered-noise whoosh on the burst (low gain so it doesn't nag)
         this.noise(0.16, 0.05, 'bandpass', 640);
         break;
+      case 'whiff':
+        // dry scuff of a committed slide hitting nothing (#134)
+        this.noise(0.1, 0.07, 'highpass', 1500);
+        break;
       case 'goal':
         [0, 4, 7, 12].forEach((semi, i) => {
           window.setTimeout(() => this.tone(440 * Math.pow(2, semi / 12), 0.18, 'square', 0.26), i * 70);
@@ -201,6 +215,73 @@ class AudioManager {
     if (p > 0.72) this.tone(70, 0.18, 'sine', 0.28); // sub thump for a screamer
   }
 
+  // Speed-scaled impact one-shots (#134): a muffled wall thump or a sharper
+  // woodwork ding. Same sfx/mute gating as play(); NOT gated by reduceMotion.
+  playImpact(kind: 'wallthud' | 'post', power01: number): void {
+    if (!this.sfxOn || this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    const p = Math.min(1, Math.max(0, power01));
+    if (kind === 'wallthud') {
+      this.noise(0.05 + p * 0.03, 0.06 + p * 0.1, 'lowpass', 360 + p * 200);
+      this.tone(95 - p * 25, 0.07, 'sine', 0.1 + p * 0.1, 60);
+    } else {
+      // post / crossbar — a brighter metallic ding
+      this.tone(680 + p * 200, 0.1, 'triangle', 0.1 + p * 0.12, 520);
+      this.noise(0.04, 0.05 + p * 0.06, 'bandpass', 2200);
+    }
+  }
+
+  // --- crowd bed (#134) -----------------------------------------------------
+
+  private startCrowd(): void {
+    if (!this.ctx || !this.crowdGain || this.crowdSrc) return;
+    if (!this.noiseBuf) this.noiseBuf = this.makeNoise(0.6);
+    if (!this.noiseBuf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 400;
+    src.connect(filter);
+    filter.connect(this.crowdGain);
+    src.start();
+    this.crowdSrc = src;
+    this.crowdFilter = filter;
+  }
+
+  private stopCrowd(): void {
+    if (this.crowdSrc) {
+      try {
+        this.crowdSrc.stop();
+      } catch {
+        /* already stopped */
+      }
+      this.crowdSrc.disconnect();
+      this.crowdSrc = null;
+    }
+    if (this.crowdFilter) {
+      this.crowdFilter.disconnect();
+      this.crowdFilter = null;
+    }
+  }
+
+  // A pure SINK (like setIntensity): given a 0..1 crowd level, ramp the crowd
+  // voice's gain + low-pass cutoff. It reads ctx.currentTime only for the ramp
+  // schedule — that value never feeds back into the sim. Respects sfx + mute.
+  setCrowd(level: number): void {
+    this.crowdLevel = Math.min(1, Math.max(0, level));
+    if (!this.ctx || !this.crowdGain || !this.crowdFilter) return;
+    const t = this.ctx.currentTime;
+    const on = this.sfxOn && !this.muted;
+    const gain = on ? 0.02 + this.crowdLevel * 0.16 : 0; // quiet floor → roar
+    this.crowdGain.gain.setTargetAtTime(gain, t, 0.4);
+    const cutoff = 320 + this.crowdLevel * 1800; // muffled → bright
+    this.crowdFilter.frequency.setTargetAtTime(cutoff, t, 0.4);
+  }
+
   private midiToFreq(m: number): number {
     return 440 * Math.pow(2, (m - 69) / 12);
   }
@@ -213,6 +294,7 @@ class AudioManager {
     this.intensity = intensity;
     this.musicPlaying = true;
     this.step = 0;
+    this.startCrowd(); // bring up the persistent crowd bed (#134)
     if (this.musicGain) this.musicGain.gain.setTargetAtTime(this.musicOn ? 0.18 : 0, this.ctx.currentTime, 0.3);
     const tick = () => {
       this.scheduleStep();
@@ -268,7 +350,17 @@ class AudioManager {
       this.musicTimer = null;
     }
     if (this.ctx && this.musicGain) this.musicGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2);
+    this.stopCrowd(); // tear the crowd voice down so it never bleeds into the result screen (#134)
   }
 }
 
 export const audio = new AudioManager();
+
+// Pure Surge→crowd-level mapping (#134): a quiet rest floor rising monotonically
+// with the bigger Surge meter, lifted a touch in the closing minutes. Clamped to
+// [0,1], maxing toward a roar at GROUNDSWELL. Pure, so it's unit-testable.
+export function crowdLevelFromSurge(surge01: number, lateness01: number): number {
+  const s = Number.isFinite(surge01) ? Math.min(1, Math.max(0, surge01)) : 0;
+  const late = Number.isFinite(lateness01) ? Math.min(1, Math.max(0, lateness01)) : 0;
+  return Math.min(1, 0.12 + s * 0.75 + late * 0.15);
+}
