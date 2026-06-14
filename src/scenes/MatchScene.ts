@@ -19,7 +19,12 @@ import {
   bufferConsumable,
   bufferExpired,
   INPUT_BUFFER_MS,
+  tackleOutcome,
+  ballExposure,
+  POKE_REACH,
+  SLIDE_REACH,
   type BufferedInput,
+  type TackleResult,
 } from '../core/movement';
 import { audio } from '../core/audio';
 
@@ -70,6 +75,8 @@ interface Player {
   stamina: number; // 0..1 sprint pool (only the user-controlled player drains it)
   sprintLock: boolean; // post-exhaustion recovery lock (can't sprint until recovered)
   sprinting: boolean; // transient: is this player sprint-moving this frame (drives ball knock-on)
+  tackleCd: number; // seconds until this player may attempt another tackle
+  recovery: number; // seconds grounded after a whiffed slide (can't move/act)
 }
 
 const PR = 15; // player radius
@@ -342,7 +349,7 @@ export class MatchScene extends Phaser.Scene {
     quit.on('pointerdown', () => this.abandon());
 
     this.add
-      .text(24, GAME_H - 22, 'Move: WASD/Arrows   ·   Shoot: hold Space   ·   Pass: J   ·   Switch: K   ·   Mute: M', {
+      .text(24, GAME_H - 22, 'Move: WASD   ·   Shoot: hold Space   ·   Pass: J   ·   Tackle: I (hold=slide)   ·   Switch: K   ·   Mute: M', {
         fontFamily: FONT_BODY,
         fontSize: '14px',
         color: CSS.mid,
@@ -416,6 +423,8 @@ export class MatchScene extends Phaser.Scene {
       stamina: 1,
       sprintLock: false,
       sprinting: false,
+      tackleCd: 0,
+      recovery: 0,
     };
   }
 
@@ -430,7 +439,7 @@ export class MatchScene extends Phaser.Scene {
 
   private setupInput(): void {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,M,SHIFT') as Record<
+    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,M,I,SHIFT') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -475,12 +484,83 @@ export class MatchScene extends Phaser.Scene {
       if (!this.doPass()) this.bufferInput('pass'); // pressed early → fire on reception
     });
     this.keys.K.on('down', () => this.manualSwitch());
+    // Tackle (I): tap = standing poke (short reach, no risk); hold past
+    // SLIDE_HOLD_MS = committed slide (longer lunge, but a whiff grounds you).
+    this.keys.I.on('down', () => {
+      this.tackleHeldAt = this.time.now;
+      this.tackleSlid = false;
+    });
+    this.keys.I.on('up', () => {
+      if (!this.tackleSlid && this.activeIdx >= 0) this.attemptTackle(this.activeIdx, false);
+      this.tackleHeldAt = -1;
+      this.tackleSlid = false;
+    });
     // M = master mute (global + persisted) — handy for muting the game while
     // recording / on a call without leaving the match.
     this.keys.M.on('down', () => {
       const muted = audio.toggleMute();
       this.muteTag.setVisible(muted);
     });
+  }
+
+  // tackle input state (poke on release of a tap, slide once a hold crosses the threshold)
+  private tackleHeldAt = -1;
+  private tackleSlid = false;
+  private static readonly SLIDE_HOLD_MS = 160;
+
+  // Escalate a held tackle into a committed slide once past the threshold.
+  private updateTackleInput(): void {
+    if (this.tackleHeldAt < 0 || this.tackleSlid) return;
+    if (this.time.now - this.tackleHeldAt >= MatchScene.SLIDE_HOLD_MS) {
+      if (this.activeIdx >= 0) this.attemptTackle(this.activeIdx, true);
+      this.tackleSlid = true;
+    }
+  }
+
+  // Resolve a tackle attempt by `tacklerIdx` against the current ball carrier.
+  // Always costs a short cooldown; a committed slide adds a forward lunge, and a
+  // whiffed slide grounds the tackler (recovery). User + AI share this path.
+  private attemptTackle(tacklerIdx: number, slide: boolean): TackleResult {
+    const t = this.players[tacklerIdx];
+    if (t.tackleCd > 0 || t.recovery > 0) return 'miss';
+    t.tackleCd = slide ? 0.5 : 0.28;
+    if (slide) this.lunge(t);
+    const ownerIdx = this.ball.ownerIdx;
+    // nothing to win if the ball is loose or held by a team-mate
+    if (ownerIdx < 0 || this.players[ownerIdx].side === t.side) {
+      if (slide) t.recovery = 0.5; // a committed slide into nothing still grounds you
+      return 'miss';
+    }
+    const carrier = this.players[ownerIdx];
+    const reach = slide ? SLIDE_REACH : POKE_REACH;
+    const d = dist(t.x, t.y, this.ball.x, this.ball.y);
+    const team = t.side === 'home' ? this.home : this.away;
+    const exposure = ballExposure(dist(carrier.x, carrier.y, this.ball.x, this.ball.y));
+    const res = tackleOutcome({ dist: d, reach, exposure, skill: team.defense / 99, slide, roll: this.rng.next() });
+    if (res === 'steal') {
+      this.ball.ownerIdx = tacklerIdx;
+      this.ballCarryAng = Math.atan2(t.faceY, t.faceX);
+      this.ball.vx = 0;
+      this.ball.vy = 0;
+      audio.play('save');
+    } else if (res === 'loose') {
+      this.ball.ownerIdx = -1;
+      this.ball.vx = (this.ball.x - carrier.x) * 6;
+      this.ball.vy = (this.ball.y - carrier.y) * 6;
+      this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
+      this.kickCooldown = 0.12;
+      audio.play('kick');
+    } else if (slide) {
+      t.recovery = 0.5; // whiffed slide → grounded (the risk)
+    }
+    return res;
+  }
+
+  // Brief forward impulse along facing — the committed-slide lunge.
+  private lunge(t: Player): void {
+    const fl = Math.hypot(t.faceX, t.faceY) || 1;
+    t.vx += (t.faceX / fl) * 170;
+    t.vy += (t.faceY / fl) * 170;
   }
 
   // --- match flow --------------------------------------------------------
@@ -541,6 +621,7 @@ export class MatchScene extends Phaser.Scene {
     // PLAY
     this.elapsed += dt;
     this.updateActiveSelection();
+    this.updateTackleInput(); // hold I past the threshold → committed slide
     this.updateUserControl(dt);
     this.updateAI(dt);
     this.integratePlayers(dt);
@@ -634,6 +715,14 @@ export class MatchScene extends Phaser.Scene {
   private updateUserControl(dt: number): void {
     const p = this.players[this.activeIdx];
     if (!p) return;
+    // grounded after a whiffed slide: brake to a stop, no input/sprint this beat
+    if (p.recovery > 0) {
+      const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt);
+      p.vx = nb.x;
+      p.vy = nb.y;
+      p.sprinting = false;
+      return;
+    }
     const v = this.inputVector();
     const moving = v.x !== 0 || v.y !== 0;
     // Sprint is a stamina-gated burst. You can sprint this frame only if you
@@ -799,6 +888,13 @@ export class MatchScene extends Phaser.Scene {
     this.players.forEach((p, i) => {
       if (p.isUser) return;
       p.sprinting = false; // AI never sprints; keep the knock-on flag clean for the carry block
+      // grounded after a whiffed slide: can't act, just brake to a stop
+      if (p.recovery > 0) {
+        const nb = approachVelocity(p.vx, p.vy, 0, 0, PLAYER_ACCEL, PLAYER_DECEL, dt);
+        p.vx = nb.x;
+        p.vy = nb.y;
+        return;
+      }
       if (p.role === 'GK') {
         this.updateGK(p, dt);
         return;
@@ -830,6 +926,13 @@ export class MatchScene extends Phaser.Scene {
       } else if (i === chaser[p.side] && !teamHasBall) {
         tx = this.ball.x;
         ty = this.ball.y;
+        // close enough to an opponent carrier → commit a tackle (mostly pokes,
+        // an occasional slide). This is how the AI wins the ball now that the
+        // passive auto-steal is gone; difficulty scales how eagerly it dives in.
+        const oppOwns = this.ball.ownerIdx >= 0 && this.players[this.ball.ownerIdx].side !== p.side;
+        if (oppOwns && p.tackleCd <= 0 && dist(p.x, p.y, this.ball.x, this.ball.y) < POKE_REACH) {
+          this.attemptTackle(i, this.rng.bool(0.12 * this.diff.aiAccuracy));
+        }
       } else {
         // hold shape, shift toward ball-side, push up when attacking
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
@@ -942,6 +1045,9 @@ export class MatchScene extends Phaser.Scene {
 
   private integratePlayers(dt: number): void {
     for (const p of this.players) {
+      // tick tackle cooldown + post-slide recovery lockout
+      if (p.tackleCd > 0) p.tackleCd = Math.max(0, p.tackleCd - dt);
+      if (p.recovery > 0) p.recovery = Math.max(0, p.recovery - dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       // keep inside pitch bounds (a little margin so GK can sit on the line)
@@ -1018,30 +1124,9 @@ export class MatchScene extends Phaser.Scene {
       this.ball.y = Phaser.Math.Clamp(this.ball.y, this.py + BR, this.py + this.ph - BR);
       this.ball.vx = 0;
       this.ball.vy = 0;
-      // Tackle: resolve ONCE against the single nearest opponent in range
-      // (avoids the previous mid-loop ownerIdx mutation / stale-owner bug).
-      let tackler = -1;
-      let td = Infinity;
-      for (let i = 0; i < this.players.length; i++) {
-        const o = this.players[i];
-        if (o.side === p.side) continue;
-        const d = dist(o.x, o.y, this.ball.x, this.ball.y);
-        if (d < PR + BR + 2 && d < td) {
-          td = d;
-          tackler = i;
-        }
-      }
-      if (tackler >= 0) {
-        if (this.rng.bool(0.5)) {
-          this.ball.ownerIdx = tackler; // clean steal
-        } else {
-          this.ball.ownerIdx = -1; // pops loose
-          this.ball.vx = (this.ball.x - p.x) * 6;
-          this.ball.vy = (this.ball.y - p.y) * 6;
-          this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
-          this.kickCooldown = 0.12;
-        }
-      }
+      // Tackling is no longer a passive coin-flip resolved here — possession is
+      // won only by an explicit poke/slide attempt (attemptTackle), from the
+      // user (I) or an AI defender in range. See updateUserControl / updateAI.
     }
 
     if (this.ball.ownerIdx >= 0) return;

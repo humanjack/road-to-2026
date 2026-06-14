@@ -228,3 +228,57 @@ export function isOneTouch(receiveT: number, actionT: number, windowMs = ONE_TOU
   const dt = actionT - receiveT;
   return dt >= 0 && dt <= windowMs;
 }
+
+// --- tackling --------------------------------------------------------------
+//
+// A tackle is an *attempt*, never a passive coin-flip. A standing poke has short
+// reach and no downside; a committed slide reaches further and lunges, but a
+// whiffed slide grounds the tackler for a beat (the risk). Success is weighted —
+// closer to the ball, a more exposed carrier (ball knocked further from the foot
+// by a sprint, #93), and a more skilled defender all raise it — never a flat 0.5.
+
+export type TackleResult = 'steal' | 'loose' | 'miss';
+
+export interface TackleParams {
+  dist: number; // tackler → ball distance (px)
+  reach: number; // max reach for this tackle type (poke < slide)
+  exposure: number; // 0..1 — how far the ball is off the carrier's foot (knock-on)
+  skill: number; // 0..1 — defender skill (team defense)
+  slide: boolean; // committed slide (cleaner win, but whiff = lockout for the caller)
+  roll: number; // RNG in [0,1)
+}
+
+/** Standing-poke reach measured from the ball (short, safe). */
+export const POKE_REACH = 30;
+/** Slide reach (longer lunge, but a miss grounds you). */
+export const SLIDE_REACH = 46;
+
+/**
+ * How exposed a carrier is (0..1) given how far the ball sits off their foot.
+ * At the foot (≈CARRY_BASE) the carrier is well protected (0); knocked a full
+ * sprint-touch ahead they're wide open (1). Mirrors the #93 knock-on so a sprint
+ * directly raises tackle vulnerability.
+ */
+export function ballExposure(ballAhead: number): number {
+  return Math.min(1, Math.max(0, (ballAhead - CARRY_BASE) / CARRY_KNOCK_SPRINT));
+}
+
+/**
+ * Resolve a tackle attempt. Out of reach → always a miss. In reach, success
+ * scales monotonically with closeness, carrier exposure, and defender skill; a
+ * win is a clean `steal` when very close/skilled, otherwise the ball pops
+ * `loose`. Deterministic given `roll`.
+ */
+export function tackleOutcome(p: TackleParams): TackleResult {
+  if (!(p.dist <= p.reach) || p.reach <= 0) return 'miss';
+  const closeness = 1 - Math.min(1, Math.max(0, p.dist / p.reach)); // 0..1
+  const skill = Math.min(1, Math.max(0, p.skill));
+  const exposure = Math.min(1, Math.max(0, p.exposure));
+  let success = 0.3 + closeness * 0.4 + exposure * 0.25 + skill * 0.2;
+  success = Math.min(0.95, Math.max(0.05, success));
+  if (p.roll < success) {
+    const cleanly = closeness * 0.5 + skill * 0.4 + (p.slide ? 0.15 : 0);
+    return cleanly > 0.55 ? 'steal' : 'loose';
+  }
+  return 'miss';
+}
