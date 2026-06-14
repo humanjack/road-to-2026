@@ -74,9 +74,15 @@ export const DEFAULT_FORMATION = FORMATION_4_3_3;
 
 /**
  * Resolve a team's formation label (e.g. '4-3-3', '4-2-3-1', '3-4-2-1') to a
- * concrete 11-slot table. Exact matches win; otherwise we approximate by the
- * defensive-line count (a back three → 3-5-2, a flat 4-4 → 4-4-2), falling back
- * to 4-3-3 for anything else. Always returns a valid 11-slot table. Pure.
+ * concrete 11-slot table. We only ship three shapes, so unknown labels are
+ * approximated by their defensive line, in this order:
+ *   1. exact match on a shipped key ('4-3-3' | '4-4-2' | '3-5-2')         → that table
+ *   2. label starts with '4-4' (e.g. '4-4-2 diamond')                     → 4-4-2
+ *   3. label starts with '3'  (any back-three: '3-5-2','3-4-3','3-4-2-1') → 3-5-2
+ *   4. everything else (incl. '4-2-3-1', '4-3-3' variants, blanks/null)   → 4-3-3
+ * So a back-four shape we don't model (4-2-3-1) maps to the 4-3-3 default rather
+ * than 4-4-2 — both have four at the back, and 4-3-3 is the house default.
+ * Always returns a valid 11-slot table. Pure.
  */
 export function resolveFormation(label: string | undefined | null): FormationSlot[] {
   if (!label) return DEFAULT_FORMATION;

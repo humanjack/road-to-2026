@@ -40,7 +40,6 @@ import {
   runActive,
   keeperTarget,
   saveOutcome,
-  SAVE_REACH,
   chooseSwitchTarget,
   assignMarks,
   markPoint,
@@ -64,7 +63,7 @@ import {
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
 import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
-import { resolveFormation } from '../core/formations';
+import { resolveFormation, type Role } from '../core/formations';
 import {
   cameraTarget,
   followStep,
@@ -99,7 +98,6 @@ export interface MatchInit {
 }
 
 type Side = 'home' | 'away';
-type Role = 'GK' | 'DEF' | 'MID' | 'FWD';
 type PowerType = 'boost' | 'freeze' | 'magnet';
 
 const POWERUPS: Record<PowerType, { label: string; color: number; icon: string; dur: number }> = {
@@ -190,11 +188,23 @@ const TACTICAL_MARGIN = 160; // px of stand/surround revealed around the pitch i
 // inside a slightly larger WORLD (run-off + stands all around). The camera BOUNDS
 // use the world; all viewport↔world conversions keep using GAME_W/GAME_H (the
 // fixed 1280×720 canvas the HUD/uiCam live on). The pitch is centred in the world.
+//
+// PITCH-SCALE RATIONALE (#183): the pitch grew from the old 5v5 1152×560 to
+// 2176×1216 — a length factor of ~1.89× (PITCH_W/1152). Everything that is a
+// distance ON the pitch is scaled by that factor to preserve the 5v5 feel as a
+// fraction of the pitch, so the game plays the same shape at 11v11 scale:
+//   • goalH 168→360 (holds the ~0.30-of-height arcade ratio)
+//   • penalty box depth 120→232, centre circle 70→136 (drawPitch)
+//   • CAM_LEAD 90→160, CAM_VLEAD_CAP 70→130 (broadcast framing)
+//   • off-ball AI ranges expressed directly as fractions of `pw` (spawn/AI below)
+//   • ball drag 0.34→0.57/s so a free ball rolls ~1.9× further (updateBall)
+//   • aiShootRange / SAVE_REACH scaled ~1.89× (DIFF table / diving save)
+// These are proportional scales of empirically-tuned 5v5 values, not new tunings.
 const PITCH_X = 112;
 const PITCH_Y = 112;
-const PITCH_W = 2176; // ~1.9× the old 1152 — realistic spacing for 22 players
-const PITCH_H = 1216; // ~2.2× the old 560; aspect ~1.79 (closer to a real 105×68 pitch)
-const GOAL_H = 360; // mouth height, ~0.30 of pitch height (same arcade-generous ratio as 5v5)
+const PITCH_W = 2176; // ~1.89× the old 1152 — realistic spacing for 22 players
+const PITCH_H = 1216; // ~2.17× the old 560; aspect ~1.79 (closer to a real 105×68 pitch)
+const GOAL_H = 360; // mouth height — old 168/560 ≈ 0.30; new 360/1216 ≈ 0.296 (ratio held)
 const WORLD_MARGIN = 112; // run-off/stand strip between the pitch and the world edge
 const WORLD_W = PITCH_X + PITCH_W + WORLD_MARGIN; // 2400
 const WORLD_H = PITCH_Y + PITCH_H + WORLD_MARGIN; // 1440
@@ -1895,6 +1905,11 @@ export class MatchScene extends Phaser.Scene {
     if (!this.ball.grounded) return; // a lofted ball clears a ground keeper (#132)
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
     if (speed < 220) return; // only shots/driven balls trigger a diving save
+    // Dive reach + lunge scale with the pitch (#183): SAVE_REACH was 52px on the
+    // 1152px 5v5 pitch (≈0.045·pw); the goal mouth grew 2.14× (168→360), so a fixed
+    // 52px reach would leave the keeper stranded for far-post/wide shots. Scale the
+    // reach AND the vertical lunge cap so shot-stopping geometry matches 5v5.
+    const reach = this.pw * 0.045; // ≈98px on the 11v11 pitch
     for (let i = 0; i < this.players.length; i++) {
       const k = this.players[i];
       if (k.role !== 'GK') continue;
@@ -1902,13 +1917,13 @@ export class MatchScene extends Phaser.Scene {
       const towardOwnGoal = k.side === 'home' ? this.ball.vx < 0 : this.ball.vx > 0;
       if (!towardOwnGoal) continue;
       const d = dist(k.x, k.y, this.ball.x, this.ball.y);
-      if (d > SAVE_REACH) continue;
+      if (d > reach) continue;
       // dive: lunge toward the ball's line
       const dy = this.ball.y - k.y;
-      k.vy += Math.sign(dy) * Math.min(220, Math.abs(dy) * 8);
+      k.vy += Math.sign(dy) * Math.min(420, Math.abs(dy) * 8);
       k.diveT = 0.45; // keeper dive pose (#137)
       const reaction = this.keeperReaction(k.side);
-      const res = saveOutcome(d, SAVE_REACH, reaction, this.rng.next());
+      const res = saveOutcome(d, reach, reaction, this.rng.next());
       if (res === 'catch') {
         this.ball.ownerIdx = i;
         this.ball.vx = 0;

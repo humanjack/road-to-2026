@@ -103,11 +103,14 @@ export type ZoomLevel = 'wide' | 'balanced' | 'tight';
 
 /**
  * Resting broadcast zoom for each player-chosen level, retuned for the full 11v11
- * pitch (#183). WIDE (0.56) frames the whole enlarged pitch edge-to-edge (the
- * classic flat view — zoom < 1 because the pitch is now far wider than the 1280px
- * canvas); BALANCED (1.05) is the default broadcast framing — ~55% of the pitch
- * each axis, readable context for 22 players; TIGHT (1.45) is the closer action
- * cam. (On the old 5v5 pitch these were 1.0 / 2.0 / 2.4.)
+ * pitch (#183). At zoom Z the visible world width is GAME_W / Z (1280 / Z), so for
+ * the 2176px pitch:
+ *   WIDE     0.56 → 1280/0.56 ≈ 2285px ≥ 2176 → the whole pitch edge-to-edge
+ *   BALANCED 1.05 → 1280/1.05 ≈ 1219px ≈ 56% of the pitch → default broadcast
+ *   TIGHT    1.45 → 1280/1.45 ≈  883px ≈ 41% → close action cam
+ * (On the old 5v5 1152px pitch these were 1.0 / 2.0 / 2.4.) Zoom < 1 for WIDE
+ * because the pitch is now far wider than the 1280px canvas. If the pitch width
+ * changes, scale these so WIDE still satisfies 1280/Z ≥ pitchWidth.
  */
 export function baseZoom(level: ZoomLevel): number {
   switch (level) {
