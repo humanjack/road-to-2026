@@ -62,7 +62,19 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
-import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
+import {
+  gaitPose,
+  kickPose,
+  passPose,
+  receivePose,
+  selectPose,
+  chooseCelebrant,
+  depthScale,
+  gaitAdvance,
+  accelLean,
+  turnPlant,
+  type PoseAction,
+} from '../core/poses';
 import { resolveFormation, type Role } from '../core/formations';
 import {
   cameraTarget,
@@ -135,7 +147,8 @@ interface Player {
   recovery: number; // seconds grounded after a whiffed slide (can't move/act)
   ballHold: number; // seconds a keeper has held a caught ball (drives distribution)
   // pose countdowns (#137), all sim-ticked in integratePlayers (deterministic)
-  kickT: number; // kick wind-up / follow-through
+  kickT: number; // kick wind-up / follow-through (a SHOT)
+  passT: number; // clipped pass strike (#185) — a lower-amplitude kick
   diveT: number; // keeper dive
   slideT: number; // committed slide
   celebrateT: number; // goal celebration
@@ -144,6 +157,37 @@ interface Player {
   kickPop: number; // sim-ticked power-scaled kick impulse for squash-stretch (#131)
   pvx: number; // render-only prev velocity (for the along-facing accel that drives #131)
   pvy: number;
+  // render-only animation state (#185) — never read by the sim
+  runPhase: number; // per-player gait phase, advanced by DISTANCE travelled (anti-skate)
+  blendAction: PoseAction; // the pose action drawn last frame (detects a state change → cross-fade)
+  blendT: number; // 0..1 cross-fade progress out of the previous pose into the current one
+  bp: FigurePose; // last-frame blended figure channels — the cross-fade's start point
+}
+
+// The continuous figure channels drawPlayer cross-fades on a pose change (#185),
+// so a kick/pass/receive grows out of the run instead of snapping. Render-only.
+// These are the BASE pose channels only — the continuous overlays (lateral/accel
+// lean, turn-plant) are applied AFTER the blend, so they're not stored here (a
+// fading plant must not be re-introduced by the next frame's cross-fade). Grounded
+// `tip` is likewise excluded: it's gated out of blending and handled directly.
+interface FigurePose {
+  backX: number;
+  backFY: number;
+  backBend: number;
+  frontX: number;
+  frontFY: number;
+  frontBend: number;
+  swing: number; // near-arm fore/aft
+  poseLean: number; // pose-specific forward/back lean contribution (× U)
+  crouch: number; // height scale
+}
+
+// A pose is "upright" (cross-fadeable) unless it's grounded (slide/dive/recover),
+// which keeps bespoke `tip` handling — blending a face-down pose against a standing
+// one would break (the FIFA "some things don't blend" rule). Module-level so it's
+// not reallocated per player per frame (#185). Pure.
+function isUprightPose(a: PoseAction): boolean {
+  return a !== 'slide' && a !== 'dive' && a !== 'recover';
 }
 
 const PR = 15; // player radius
@@ -210,7 +254,9 @@ const WORLD_W = PITCH_X + PITCH_W + WORLD_MARGIN; // 2400
 const WORLD_H = PITCH_Y + PITCH_H + WORLD_MARGIN; // 1440
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
-const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
+const RUN_BASE_FREQ = 18; // celebrate-hop phase rate (rad/s); the run GAIT is now per-player displacement-driven (#185)
+const BLEND_DUR = 0.13; // sec to cross-fade figure channels on a pose change (#185); ~130ms reads
+// snappy-but-smooth for arcade actions (shorter than a kick's 0.28s so it never lags input)
 const SPRINT_THRUST = 0.6; // forward-stretch impulse fed to the squashStretch channel on sprint kick-in (#144)
 // body-bump (#130): a closing speed above the threshold exchanges momentum
 const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
@@ -260,6 +306,7 @@ export class MatchScene extends Phaser.Scene {
   // reused pose outputs (#anim) — one of each, the draw loop runs players sequentially
   private gaitScratch = { backLegX: 0, frontLegX: 0, backFootLift: 0, frontFootLift: 0, backKnee: 0, frontKnee: 0, bob: 0, armX: 0 };
   private kickScratch = { legX: 0, legLift: 0, plantKnee: 0, lean: 0, armX: 0, contact: 0 };
+  private passScratch = { legX: 0, legLift: 0, plantKnee: 0, lean: 0, armX: 0, contact: 0 };
   private recvScratch = { crouch: 1, reach: 0, lean: 0 };
   private bumpScratch = { ax: 0, ay: 0, bx: 0, by: 0 }; // reused output for resolveBump (#130)
   private squashScratch = { sx: 1, sy: 1 }; // reused output for squashStretch (#131)
@@ -944,6 +991,7 @@ export class MatchScene extends Phaser.Scene {
       recovery: 0,
       ballHold: 0,
       kickT: 0,
+      passT: 0,
       diveT: 0,
       slideT: 0,
       celebrateT: 0,
@@ -952,6 +1000,10 @@ export class MatchScene extends Phaser.Scene {
       kickPop: 0,
       pvx: 0,
       pvy: 0,
+      runPhase: idx * 1.7, // seed the gait clock desynced per player (#185)
+      blendAction: 'run',
+      blendT: 1, // start settled (no cross-fade in flight)
+      bp: { backX: 0, backFY: 0, backBend: 0, frontX: 0, frontFY: 0, frontBend: 0, swing: 0, poseLean: 0, crouch: 1 },
     };
   }
 
@@ -1132,6 +1184,7 @@ export class MatchScene extends Phaser.Scene {
       p.vx = 0;
       p.vy = 0;
       p.kickT = 0; // clear any pose so a celebration never leaks past kickoff (#137)
+      p.passT = 0;
       p.diveT = 0;
       p.slideT = 0;
       p.celebrateT = 0;
@@ -1620,7 +1673,7 @@ export class MatchScene extends Phaser.Scene {
       this.showBanner('ONE-TOUCH!', C.cyan, 450);
       this.surgeHome = Math.min(100, this.surgeHome + 4);
     }
-    this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    this.kickBall(p, (dx / len) * power, (dy / len) * power, true); // a pass (#185)
     this.setActive(targetIdx);
     return true;
   }
@@ -1657,7 +1710,7 @@ export class MatchScene extends Phaser.Scene {
     const blocked = this.players.some(
       (q) => q.side !== p.side && q.role !== 'GK' && segmentBlocked(p.x, p.y, tx, ty, q.x, q.y, PR + 8),
     );
-    this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    this.kickBall(p, (dx / len) * power, (dy / len) * power, true); // a (driven) pass (#185)
     if (blocked) this.loftBall(len);
     this.setActive(targetIdx);
     return true;
@@ -1704,7 +1757,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.grounded = false;
   }
 
-  private kickBall(from: Player, vx: number, vy: number): void {
+  private kickBall(from: Player, vx: number, vy: number, isPass = false): void {
     this.ball.vx = vx;
     this.ball.vy = vy;
     this.ball.ownerIdx = -1;
@@ -1719,8 +1772,18 @@ export class MatchScene extends Phaser.Scene {
     this.ball.y = from.y + (vy / len) * (PR + BR + 2);
     this.lastKickIdx = this.players.indexOf(from);
     this.kickCooldown = 0.18;
-    from.kickT = 0.28; // kick wind-up + follow-through pose (#137; user + AI)
-    from.kickPop = shotPower01(len); // power-scaled kick stretch impulse, springs back (#131)
+    // A pass animates as the clipped passPose (#185) — a shorter strike with less
+    // body commitment; a shot keeps the full kick wind-up + follow-through. Only
+    // one of kickT/passT is ever active, so selectPose reads the right one.
+    if (isPass) {
+      from.passT = 0.2;
+      from.kickT = 0;
+      from.kickPop = shotPower01(len) * 0.5; // a pass pops the body less than a shot
+    } else {
+      from.kickT = 0.28; // kick wind-up + follow-through pose (#137; user + AI)
+      from.passT = 0;
+      from.kickPop = shotPower01(len); // power-scaled kick stretch impulse, springs back (#131)
+    }
     audio.playKick(shotPower01(len)); // power-scaled thwock: a screamer hits harder than a tap
   }
 
@@ -2002,7 +2065,7 @@ export class MatchScene extends Phaser.Scene {
     const dy = t.y - p.y;
     const len = Math.hypot(dx, dy) || 1;
     const power = Math.min(620, 280 + len * 1.3);
-    this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    this.kickBall(p, (dx / len) * power, (dy / len) * power, true); // AI distribution pass (#185)
   }
 
   private nearestOpponentDist(p: Player): number {
@@ -2063,6 +2126,7 @@ export class MatchScene extends Phaser.Scene {
       if (p.recovery > 0) p.recovery = Math.max(0, p.recovery - dt);
       // pose countdowns (#137) — sim-ticked so replays produce identical pose timings
       if (p.kickT > 0) p.kickT = Math.max(0, p.kickT - dt);
+      if (p.passT > 0) p.passT = Math.max(0, p.passT - dt);
       if (p.diveT > 0) p.diveT = Math.max(0, p.diveT - dt);
       if (p.slideT > 0) p.slideT = Math.max(0, p.slideT - dt);
       if (p.celebrateT > 0) p.celebrateT = Math.max(0, p.celebrateT - dt);
@@ -2710,7 +2774,7 @@ export class MatchScene extends Phaser.Scene {
 
     const speed = Math.hypot(p.vx, p.vy);
     const gaitAmt = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad;
-    const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT, p.receiveT);
+    const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT, p.receiveT, p.passT);
     const ds = depthScale(p.y, this.py, this.ph);
     // celebrate hop lifts the whole figure (shadow stays grounded → reads as a jump)
     const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.8 * PR : 0;
@@ -2732,9 +2796,16 @@ export class MatchScene extends Phaser.Scene {
     const isGK = p.role === 'GK';
     const skinArm = this.shade(p.skin, 0.96);
 
-    // pose channels
-    const ga = gaitPose(runT * 2 + p.phase, gaitAmt, this.gaitScratch);
+    // ---- pose channels ----
+    const carrying = this.ball.ownerIdx >= 0 && this.players[this.ball.ownerIdx] === p;
+    // The run GAIT clock is now per-player and advanced by DISTANCE travelled (#185)
+    // so stride frequency tracks ground speed (no skating); a ball carrier strides
+    // choppier (higher cadence + shorter amplitude) — close control reads distinct.
+    if (!this.reduceMotion) p.runPhase += gaitAdvance(speed, this.realDtSec, cad, carrying);
+    const ga = gaitPose(p.runPhase, gaitAmt * (carrying ? 0.85 : 1), this.gaitScratch); // carrier: −15% stride amplitude (pairs with the +25% cadence in gaitAdvance → deft close control)
     const kp = sel.action === 'kick' ? kickPose(sel.t, this.kickScratch) : null;
+    const pp = sel.action === 'pass' ? passPose(sel.t, this.passScratch) : null;
+    const strike = kp || pp; // a shot or a clipped pass — same KickPose channels
     const rp = sel.action === 'receive' ? receivePose(sel.t, this.recvScratch) : null;
     const slidePose = sel.action === 'slide';
     const grounded = slidePose || sel.action === 'dive';
@@ -2743,48 +2814,21 @@ export class MatchScene extends Phaser.Scene {
     // a whiffed-slide RECOVER eases the figure back up from face-down (tip → 0)
     const tip = grounded ? -0.95 : sel.action === 'recover' ? -0.95 * (1 - sel.t) : 0;
 
-    // upper-body lean: into lateral travel + a forward lean from the kick / a slight
-    // backward cushion on a receive. Both grow toward the head (h more negative = higher).
-    const crouch = rp ? rp.crouch : 1;
-    const lateralLean = (speed > 40 ? 0.5 : 0.2) * horiz * U;
-    const poseLean = ((kp ? kp.lean : 0) + (rp ? rp.lean : 0)) * U;
-    const totalLean = lateralLean + poseLean;
-    const leanAt = (h: number) => (totalLean * -h) / (3.0 * U);
-
-    const bob = ga.bob * U;
-
-    const g = this.bodyGfx;
-    g.save();
-    g.translateCanvas(p.x, p.y - hop);
-    g.scaleCanvas(ds, ds);
-    if (mirror < 0) g.scaleCanvas(-1, 1); // draw facing right; mirror to face left
-    g.scaleCanvas(sq.sy, sq.sx); // accel/decel squash: width = sy (perp), height = sx (along)
-    if (tip !== 0) {
-      g.rotateCanvas(tip); // tip forward into a slide / dive, ease back up on a recover
-      const f = tip / -0.95;
-      g.translateCanvas(0.35 * U * f, -0.1 * U * f);
-    }
-
-    // ---- heights (feet at 0, up = −y); bob raises the body, crouch lowers it ----
-    const hipY = -1.0 * U * crouch - bob;
-    const shoulderY = (isGK ? -2.45 : -2.3) * U * crouch - bob;
-    const headCY = (isGK ? -2.95 : -2.8) * U * crouch - bob;
-    const headR = (isGK ? 0.58 : 0.55) * U;
-
-    // ---- per-leg targets (foot x/y + knee bend), by pose ----
     // a narrow hip stance so the profile stride splits clearly fore/aft (the feet
     // alternate front↔back along travel) instead of scissoring side-by-side.
     const legW = 0.44 * U;
     const legX = 0.16 * U;
+
+    // ---- raw figure channels for THIS pose (before the cross-fade) ----
     let backX: number, backFY: number, backBend: number, frontX: number, frontFY: number, frontBend: number;
-    if (kp) {
+    if (strike) {
       // striking leg = front (winds back, sweeps through, finishes high); plant = back
-      frontX = legX + kp.legX * U;
-      frontFY = -kp.legLift * U;
-      frontBend = Math.max(0, 0.45 - Math.max(0, Math.min(1, kp.legX)) * 0.45);
+      frontX = legX + strike.legX * U;
+      frontFY = -strike.legLift * U;
+      frontBend = Math.max(0, 0.45 - Math.max(0, Math.min(1, strike.legX)) * 0.45);
       backX = -legX;
       backFY = 0;
-      backBend = kp.plantKnee;
+      backBend = strike.plantKnee;
     } else if (slidePose) {
       frontX = legX + 1.0 * U; // both legs thrown forward in the lunge
       frontFY = -0.1 * U;
@@ -2807,11 +2851,86 @@ export class MatchScene extends Phaser.Scene {
       frontFY = -ga.frontFootLift * U;
       frontBend = ga.frontKnee;
     }
+    let swing = (strike ? strike.armX : ga.armX) * U; // near arm fore/aft; far arm opposite
+    let poseLean = ((strike ? strike.lean : 0) + (rp ? rp.lean : 0)) * U; // pose-specific lean
+    let crouch = rp ? rp.crouch : 1;
+
+    // ---- cross-fade between pose states (#185) ----
+    // Kill the puppet-snap when the action changes (kick→run, pass→run, receive→run)
+    // by easing the BASE channels out of the previous pose over BLEND_DUR. The model:
+    // `p.bp` holds last frame's rendered base channels and doubles as the fade's
+    // start point — on an action change blendT resets to 0; each frame we lerp from
+    // bp toward the current raw channels, converging exactly to the new pose at
+    // blendT=1, then track it crisply once settled. Gated to UPRIGHT poses (a
+    // grounded slide/dive/recover keeps its bespoke `tip` handling). The continuous
+    // overlays (turn-plant, lateral/accel lean) are applied AFTER this, NOT stored in
+    // bp — a fading plant must never be re-introduced by the next frame's blend.
+    if (sel.action !== p.blendAction) {
+      p.blendT = isUprightPose(sel.action) && isUprightPose(p.blendAction) ? 0 : 1;
+      p.blendAction = sel.action;
+    }
+    if (p.blendT < 1) p.blendT = Math.min(1, p.blendT + this.realDtSec / BLEND_DUR);
+    const bp = p.bp;
+    if (p.blendT < 1 && !this.reduceMotion) {
+      const u = p.blendT;
+      const bt = 1 - (1 - u) * (1 - u); // ease-out (fast start, settles into the new pose)
+      backX = bp.backX + (backX - bp.backX) * bt;
+      backFY = bp.backFY + (backFY - bp.backFY) * bt;
+      backBend = bp.backBend + (backBend - bp.backBend) * bt;
+      frontX = bp.frontX + (frontX - bp.frontX) * bt;
+      frontFY = bp.frontFY + (frontFY - bp.frontFY) * bt;
+      frontBend = bp.frontBend + (frontBend - bp.frontBend) * bt;
+      swing = bp.swing + (swing - bp.swing) * bt;
+      poseLean = bp.poseLean + (poseLean - bp.poseLean) * bt;
+      crouch = bp.crouch + (crouch - bp.crouch) * bt;
+    }
+    // remember this frame's BASE channels (pre-overlay) as the next fade's start point
+    bp.backX = backX; bp.backFY = backFY; bp.backBend = backBend;
+    bp.frontX = frontX; bp.frontFY = frontFY; bp.frontBend = frontBend;
+    bp.swing = swing; bp.poseLean = poseLean; bp.crouch = crouch;
+
+    // ---- turn plant (#185): a hard cut widens the stance + dips the body, the
+    // weight tell of a body pivoting against its own momentum (run/idle only).
+    const turnP = this.reduceMotion ? 0 : turnPlant(p.vx, p.vy, p.faceX, p.faceY);
+    if (turnP > 0 && !strike && !rp && !grounded) {
+      const widen = turnP * 0.3 * U;
+      backX -= widen;
+      frontX += widen;
+      crouch *= 1 - turnP * 0.1;
+    }
+
+    // ---- upper-body lean: into lateral travel + fore/aft accel weight + pose lean.
+    // accelLean leans forward into a burst, rocks back on a hard brake (#185). All
+    // grow toward the head (h more negative = higher).
+    const fwdLean = this.reduceMotion ? 0 : accelLean(accelAlong) * U;
+    const lateralLean = (speed > 40 ? 0.5 : 0.2) * horiz * U;
+    const totalLean = lateralLean + poseLean + fwdLean;
+    const leanAt = (h: number) => (totalLean * -h) / (3.0 * U);
+
+    const bob = ga.bob * U;
+
+    const g = this.bodyGfx;
+    g.save();
+    g.translateCanvas(p.x, p.y - hop);
+    g.scaleCanvas(ds, ds);
+    if (mirror < 0) g.scaleCanvas(-1, 1); // draw facing right; mirror to face left
+    g.scaleCanvas(sq.sy, sq.sx); // accel/decel squash: width = sy (perp), height = sx (along)
+    if (tip !== 0) {
+      g.rotateCanvas(tip); // tip forward into a slide / dive, ease back up on a recover
+      const f = tip / -0.95;
+      g.translateCanvas(0.35 * U * f, -0.1 * U * f);
+    }
+
+    // ---- heights (feet at 0, up = −y); bob raises the body, crouch lowers it ----
+    const hipY = -1.0 * U * crouch - bob;
+    const shoulderY = (isGK ? -2.45 : -2.3) * U * crouch - bob;
+    const headCY = (isGK ? -2.95 : -2.8) * U * crouch - bob;
+    const headR = (isGK ? 0.58 : 0.55) * U;
+    // (leg targets, swing + crouch were computed + cross-faded above, #185)
 
     // ---- far arm (behind the torso) ----
     const armW = 0.3 * U;
     const armSh = shoulderY + 0.12 * U;
-    const swing = (kp ? kp.armX : ga.armX) * U; // near arm fore/aft; far arm opposite
     const farShX = -0.58 * U + leanAt(armSh);
     const farHandX = (armsUp ? -0.5 : -0.62) * U - swing + leanAt(hipY);
     const farHandY = armsUp ? shoulderY - 1.05 * U : hipY + 0.08 * U;

@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale, DEPTH_NEAR, DEPTH_FAR } from './poses';
+import {
+  gaitPose,
+  kickPose,
+  passPose,
+  receivePose,
+  selectPose,
+  chooseCelebrant,
+  depthScale,
+  gaitAdvance,
+  accelLean,
+  turnPlant,
+  DEPTH_NEAR,
+  DEPTH_FAR,
+} from './poses';
 
 describe('gaitPose (#anim run cycle)', () => {
   it('is perfectly still at gait 0 (a standing player does not animate)', () => {
@@ -97,6 +110,10 @@ describe('selectPose priority', () => {
   it('kick beats receive and run', () => {
     expect(selectPose(0.2, 0, 0, 0, 0, 0.2).action).toBe('kick');
   });
+  it('kick (a shot) beats pass; pass beats receive', () => {
+    expect(selectPose(0.2, 0, 0, 0, 0, 0, 0.2).action).toBe('kick'); // kickT + passT → kick
+    expect(selectPose(0, 0, 0, 0, 0, 0.2, 0.2).action).toBe('pass'); // passT + receiveT → pass
+  });
   it('receive beats run', () => {
     expect(selectPose(0, 0, 0, 0, 0, 0.2).action).toBe('receive');
   });
@@ -176,5 +193,82 @@ describe('depthScale (#128 scale-for-depth)', () => {
     expect(depthScale(py, py, 0)).toBe(1);
     expect(depthScale(py, py, -10)).toBe(1);
     expect(depthScale(Infinity, py, ph)).toBe(1);
+  });
+});
+
+describe('passPose (#185 clipped strike)', () => {
+  it('winds the leg back early, then sweeps forward to a follow-through', () => {
+    expect(passPose(0.15).legX).toBeLessThan(0); // wind-up
+    expect(passPose(1).legX).toBeGreaterThan(0.4); // follow-through forward
+  });
+
+  it('is lower-amplitude than a full shot kick at every comparable phase', () => {
+    for (const t of [0.2, 0.5, 0.8, 1]) {
+      expect(Math.abs(passPose(t).legX)).toBeLessThanOrEqual(Math.abs(kickPose(t).legX) + 1e-9);
+      expect(passPose(t).legLift).toBeLessThanOrEqual(kickPose(t).legLift + 1e-9);
+      expect(passPose(t).lean).toBeLessThanOrEqual(kickPose(t).lean + 1e-9);
+    }
+    expect(passPose(1).legX).toBeLessThan(kickPose(1).legX); // strictly smaller follow-through
+  });
+
+  it('has a contact spike mid-strike', () => {
+    expect(passPose(0.42).contact).toBeGreaterThan(0.9);
+    expect(passPose(0).contact).toBeCloseTo(0, 6);
+  });
+});
+
+describe('gaitAdvance (#185 displacement-driven anti-skate cadence)', () => {
+  it('advances proportionally to distance travelled (speed·dt)', () => {
+    expect(gaitAdvance(200, 1 / 60)).toBeCloseTo(200 * (1 / 60) * 0.18, 6);
+    expect(gaitAdvance(400, 1 / 60)).toBeCloseTo(2 * gaitAdvance(200, 1 / 60), 6); // 2× speed ⇒ 2× phase
+  });
+  it('is zero when stationary or stopped (no skate / no drift)', () => {
+    expect(gaitAdvance(0, 1 / 60)).toBe(0);
+    expect(gaitAdvance(200, 0)).toBe(0);
+  });
+  it('a ball carrier strides choppier (higher cadence)', () => {
+    expect(gaitAdvance(200, 1 / 60, 1, true)).toBeGreaterThan(gaitAdvance(200, 1 / 60, 1, false));
+  });
+  it('scales with the surge cadence multiplier', () => {
+    expect(gaitAdvance(200, 1 / 60, 1.5)).toBeCloseTo(1.5 * gaitAdvance(200, 1 / 60, 1), 6);
+  });
+});
+
+describe('accelLean (#185 fore/aft weight)', () => {
+  it('leans forward on acceleration, back on a brake, neutral at cruise', () => {
+    expect(accelLean(1600)).toBeGreaterThan(0);
+    expect(accelLean(-1600)).toBeLessThan(0);
+    expect(accelLean(0)).toBe(0);
+  });
+  it('clamps to ±amp for extreme accel', () => {
+    expect(accelLean(99999, 1600, 0.22)).toBeCloseTo(0.22, 6);
+    expect(accelLean(-99999, 1600, 0.22)).toBeCloseTo(-0.22, 6);
+  });
+  it('is finite-safe', () => {
+    expect(accelLean(NaN)).toBe(0);
+    expect(accelLean(500, 0)).toBe(0);
+  });
+});
+
+describe('turnPlant (#185 cut/pivot tell)', () => {
+  it('is zero running straight (facing aligned with travel)', () => {
+    expect(turnPlant(200, 0, 1, 0)).toBeCloseTo(0, 6);
+  });
+  it('is zero when moving slowly (no plant at a walk)', () => {
+    expect(turnPlant(20, 0, 0, 1)).toBe(0);
+  });
+  it('fires on a hard cut (facing diverges from fast travel)', () => {
+    const reverse = turnPlant(260, 0, -1, 0); // sprinting +x but steering back −x
+    const square = turnPlant(260, 0, 0, 1); // sprinting +x but steering ⟂
+    expect(reverse).toBeGreaterThan(0.5);
+    expect(square).toBeGreaterThan(0);
+    expect(reverse).toBeGreaterThan(square); // a sharper divergence plants harder
+  });
+  it('returns a normalised 0..1 intensity', () => {
+    for (const [vx, vy, fx, fy] of [[300, 0, -1, 0], [200, 100, -1, -1], [100, 0, 0, 1]] as const) {
+      const v = turnPlant(vx, vy, fx, fy);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
   });
 });

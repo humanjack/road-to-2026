@@ -13,9 +13,19 @@
 //
 // `action: 'run'` reproduces the original inline sine swing EXACTLY (unit-tested),
 // so this refactor is behaviour-preserving for the common case.
+//
+// Pure pose helpers (composed in drawPlayer, all gated under reduceMotion):
+//   gaitPose      — run cycle (jointed legs + bob + arm swing)
+//   kickPose      — full shot: wind-up → strike → follow-through
+//   passPose      — clipped strike: a lower, shorter kick for short passes (#185)
+//   receivePose   — first-touch cushion
+//   gaitAdvance   — per-player gait phase advance by DISTANCE travelled (#185, anti-skate)
+//   accelLean     — fore/aft body lean from along-facing acceleration (#185, weight)
+//   turnPlant     — stance-widen + crouch dip intensity on a hard cut (#185, pivot tell)
+//   depthScale    — broadcast scale-for-depth
 // ---------------------------------------------------------------------------
 
-export type PoseAction = 'run' | 'kick' | 'slide' | 'dive' | 'celebrate' | 'receive' | 'recover';
+export type PoseAction = 'run' | 'kick' | 'pass' | 'slide' | 'dive' | 'celebrate' | 'receive' | 'recover';
 
 function clamp01(t: number): number {
   if (!Number.isFinite(t)) return 0;
@@ -128,6 +138,87 @@ export function receivePose(t: number, out: ReceivePose = { crouch: 1, reach: 0,
   return out;
 }
 
+// --- pass: a clipped, lower strike (#185) ----------------------------------
+//
+// A pass is the SAME coil→strike→follow-through shape as a shot, but clipped: a
+// shorter wind-up, a lower follow-through, less lean and foot-lift — so a 10-yard
+// pass no longer reads like a 30-yard screamer. Same KickPose channels as kickPose
+// (so drawPlayer + the blend treat them identically), just smaller amplitudes.
+// `t` is the 0..1 pose progress.
+export function passPose(t: number, out: KickPose = { legX: 0, legLift: 0, plantKnee: 0, lean: 0, armX: 0, contact: 0 }): KickPose {
+  const p = clamp01(t);
+  let leg: number;
+  if (p < 0.32) {
+    leg = -(p / 0.32) * 0.28; // shallow wind-up (0 → −0.28)
+  } else {
+    leg = -0.28 + easeOut((p - 0.32) / 0.68) * 0.78; // sweep to a modest follow-through (→ +0.5)
+  }
+  out.legX = leg;
+  out.legLift = Math.max(0, leg) * 0.5; // foot stays lower than a shot
+  out.plantKnee = p < 0.25 ? (p / 0.25) * 0.22 : 0.22 * (1 - clamp01((p - 0.6) / 0.4));
+  out.lean = easeOut(p) * 0.16; // less body commitment than a shot
+  out.armX = -leg * 0.45;
+  out.contact = Math.max(0, 1 - Math.abs(p - 0.42) / 0.14);
+  return out;
+}
+
+// --- weight, anti-skate cadence + turn plant (#185) ------------------------
+
+// stride phase (rad) per px travelled. Calibrated to the old fixed-clock cadence:
+// the previous gait ran at RUN_BASE_FREQ·2 = 36 rad/s and looked right at ~200 px/s,
+// so 36 / 200 = 0.18 rad/px reproduces that stride length, now tied to distance.
+// Lower → longer strides (feet turn over slower per px); higher → choppier.
+const GAIT_RAD_PER_PX = 0.18;
+const DRIBBLE_CADENCE = 1.25; // ball carrier: +25% phase per px → shorter, choppier close-control strides
+
+/**
+ * Per-player run-cycle phase advance for THIS frame, driven by DISTANCE travelled
+ * (speed·dt) rather than wall-clock, so a stride completes per unit of ground
+ * covered and the feet stop skating (the classic tell of weak locomotion). Scaled
+ * by the side's surge `cadence`; a ball carrier strides choppier (`carrying`).
+ * Returns the radians to add to the player's phase. Pure.
+ */
+export function gaitAdvance(speed: number, dtSec: number, cadence = 1, carrying = false): number {
+  if (!(speed > 0) || !(dtSec > 0)) return 0;
+  const c = cadence > 0 ? cadence : 0;
+  return speed * dtSec * GAIT_RAD_PER_PX * c * (carrying ? DRIBBLE_CADENCE : 1);
+}
+
+/**
+ * Fore/aft body lean (× U) from acceleration ALONG the facing: lean forward into a
+ * burst, rock back on a hard brake — the weight tell the eye reads as mass fighting
+ * its own inertia. `accelAlong` is the change in forward speed per second; `ref` is
+ * the accel that maps to a full lean. Clamped to ±`amp`. Pure scalar.
+ */
+export function accelLean(accelAlong: number, ref = 1600, amp = 0.22): number {
+  if (!Number.isFinite(accelAlong) || !(ref > 0)) return 0;
+  const t = accelAlong / ref;
+  const c = t < -1 ? -1 : t > 1 ? 1 : t;
+  return c * amp;
+}
+
+/**
+ * Turn-plant intensity 0..1: how hard the player is cutting, from the divergence
+ * between travel (vx,vy) and the instantly-steered facing (faceX,faceY). On a sharp
+ * cut the facing snaps to the new heading while momentum still carries the old, so
+ * they diverge — the moment a real player plants the outside foot and pivots. Zero
+ * when running straight or moving slowly. Drives a transient stance-widen + crouch
+ * dip in the render. Pure scalar.
+ */
+export function turnPlant(vx: number, vy: number, faceX: number, faceY: number, minSpeed = 60, fullSpeed = 220): number {
+  const sp = Math.hypot(vx, vy);
+  if (!(sp > minSpeed)) return 0;
+  const fl = Math.hypot(faceX, faceY);
+  if (!(fl > 0)) return 0;
+  const dot = (vx * faceX + vy * faceY) / (sp * fl); // cos angle, +1 aligned … −1 opposed
+  // (1-dot) is 0 (aligned) … 2 (reversed); ×0.7 maps a ~90° cut (dot 0 → 0.7) most of
+  // the way to full and a full reverse (dot −1 → 1.4, clamped) to max — so only real
+  // cuts plant hard, gentle curves barely register.
+  const diverge = clamp01((1 - dot) * 0.7);
+  const spF = clamp01((sp - minSpeed) / (fullSpeed - minSpeed));
+  return diverge * spF;
+}
+
 export interface PoseSelection {
   action: PoseAction;
   t: number; // 0..1 progress for timed poses (ignored for 'run')
@@ -135,13 +226,14 @@ export interface PoseSelection {
 
 /**
  * Pick the active pose from a player's deterministic sim-ticked countdowns, in
- * priority order: celebrate > dive > slide > recover > kick > receive > run.
+ * priority order: celebrate > dive > slide > recover > kick > pass > receive > run.
  * `t` is the pose's 0..1 progress (so the sweep advances as the countdown
  * drains). For 'run' the caller supplies the continuous run clock instead.
  *
- * `recover` (grounded-and-rising after a whiffed slide) is now its own action,
- * distinct from an active `slide` lunge, so the figure can animate back to its
- * feet instead of staying face-down.
+ * `recover` (grounded-and-rising after a whiffed slide) is its own action,
+ * distinct from an active `slide` lunge, so the figure animates back to its feet
+ * instead of staying face-down. `pass` is a clipped strike (passPose) distinct
+ * from a full `kick` shot.
  */
 export function selectPose(
   kickT: number,
@@ -150,17 +242,20 @@ export function selectPose(
   recovery: number,
   celebrateT: number,
   receiveT = 0,
+  passT = 0,
   kickDur = 0.28,
   diveDur = 0.45,
   slideDur = 0.4,
   recoverDur = 0.5,
   receiveDur = 0.32,
+  passDur = 0.2,
 ): PoseSelection {
   if (celebrateT > 0) return { action: 'celebrate', t: 0 };
   if (diveT > 0) return { action: 'dive', t: clamp01(1 - diveT / diveDur) };
   if (slideT > 0) return { action: 'slide', t: clamp01(1 - slideT / slideDur) };
   if (recovery > 0) return { action: 'recover', t: clamp01(1 - recovery / recoverDur) };
   if (kickT > 0) return { action: 'kick', t: clamp01(1 - kickT / kickDur) };
+  if (passT > 0) return { action: 'pass', t: clamp01(1 - passT / passDur) };
   if (receiveT > 0) return { action: 'receive', t: clamp01(1 - receiveT / receiveDur) };
   return { action: 'run', t: 0 };
 }
