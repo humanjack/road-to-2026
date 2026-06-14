@@ -360,3 +360,48 @@ export function throughBallLead(
 ): { x: number; y: number } {
   return { x: mx + mvx * runLead + attackDir * goalLead, y: my + mvy * runLead };
 }
+
+// --- off-ball movement -----------------------------------------------------
+//
+// When your team has the ball, team-mates shouldn't stand in formation — they
+// should offer options. A forward makes a depth run ahead of the ball (staying
+// in their lane for width); a midfielder holds a short support angle goal-side
+// of the carrier (a safe outlet). Runs come in staggered waves so defenders can
+// react and the attack isn't a constant overload.
+
+/**
+ * A forward's depth run: ahead of the ball toward the attacking goal, held in
+ * the player's own lane (`laneY`) for width. Clamped to a playable band so the
+ * runner never camps on the byline. `depth` is how far beyond the ball to run.
+ */
+export function forwardRunTarget(
+  laneY: number,
+  ballX: number,
+  attackDir: number,
+  pitchLeft: number,
+  pitchRight: number,
+  depth = 200,
+): { x: number; y: number } {
+  const x = Math.min(pitchRight - 40, Math.max(pitchLeft + 40, ballX + attackDir * depth));
+  return { x, y: laneY };
+}
+
+/**
+ * A midfielder's support outlet: goal-side (behind) the carrier so a back-pass
+ * is always on, offset laterally toward `laneY` to open a clean passing angle.
+ */
+export function supportTarget(
+  carrierX: number,
+  carrierY: number,
+  laneY: number,
+  attackDir: number,
+  behind = 80,
+): { x: number; y: number } {
+  return { x: carrierX - attackDir * behind, y: carrierY + (laneY - carrierY) * 0.5 };
+}
+
+/** Is this player's staggered run active right now? Desynced by `phase`. */
+export function runActive(elapsed: number, phase: number, period = 4, duty = 0.55): boolean {
+  const t = ((elapsed * 0.6 + phase) % period) / period;
+  return t < duty;
+}
