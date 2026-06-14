@@ -16,6 +16,10 @@ import {
   SPRINT_SPEED_MUL,
   SPRINT_ACCEL_MUL,
   DRIBBLE_SPEED_MUL,
+  bufferConsumable,
+  bufferExpired,
+  INPUT_BUFFER_MS,
+  type BufferedInput,
 } from '../core/movement';
 import { audio } from '../core/audio';
 
@@ -467,7 +471,9 @@ export class MatchScene extends Phaser.Scene {
       }
     });
     this.keys.SPACE.on('up', () => this.releaseShot());
-    this.keys.J.on('down', () => this.doPass());
+    this.keys.J.on('down', () => {
+      if (!this.doPass()) this.bufferInput('pass'); // pressed early → fire on reception
+    });
     this.keys.K.on('down', () => this.manualSwitch());
     // M = master mute (global + persisted) — handy for muting the game while
     // recording / on a call without leaving the match.
@@ -496,6 +502,8 @@ export class MatchScene extends Phaser.Scene {
     this.ball.vx = 0;
     this.ball.vy = 0;
     this.ball.ownerIdx = -1;
+    this.inputBuf = null; // a stalled action must not survive a kickoff/goal reset
+    this.charging = false;
     // nudge a kicking-side player onto the ball
     const taker = this.players.find((p) => p.side === side && p.role === 'MID')!;
     taker.x = this.ball.x - (side === 'home' ? 30 : -30);
@@ -537,6 +545,7 @@ export class MatchScene extends Phaser.Scene {
     this.updateAI(dt);
     this.integratePlayers(dt);
     this.updateBall(dt);
+    this.drainInputBuffer(); // fire any action queued just before we won the ball
     this.updateSurge(dt);
     this.updatePowerups(dt);
     this.renderEntities();
@@ -654,11 +663,17 @@ export class MatchScene extends Phaser.Scene {
   private releaseShot(): void {
     if (!this.charging) return;
     this.charging = false;
-    const p = this.players[this.activeIdx];
-    if (!p || this.ball.ownerIdx !== this.activeIdx) {
-      return;
-    }
     const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
+    // If we can't shoot yet (ball not collected this frame), buffer the charged
+    // release so it fires the instant we gain possession — no dropped input.
+    if (!this.fireShot(charge)) this.bufferInput('shoot', charge);
+  }
+
+  // Fire a charged shot from the active player. Returns false (without firing)
+  // when the active player doesn't own the ball, so the caller can buffer it.
+  private fireShot(charge: number): boolean {
+    const p = this.players[this.activeIdx];
+    if (!p || this.ball.ownerIdx !== this.activeIdx) return false;
     // aim: face direction, biased toward opponent goal if little input
     let ax = p.faceX;
     let ay = p.faceY;
@@ -676,6 +691,7 @@ export class MatchScene extends Phaser.Scene {
       this.shake(120, 0.006);
       this.showBanner('SCREAMER!', C.surge, 500);
     }
+    return true;
   }
 
   // Tally a shot and, by projecting its straight-line path to the opponent
@@ -693,9 +709,11 @@ export class MatchScene extends Phaser.Scene {
     if (yAtGoal >= gy0 && yAtGoal <= gy0 + this.goalH) this.onTarget[side]++;
   }
 
-  private doPass(): void {
+  // Returns false (without passing) when the active player doesn't own the ball,
+  // so the caller can buffer the press and retry it on reception.
+  private doPass(): boolean {
     const p = this.players[this.activeIdx];
-    if (!p || this.ball.ownerIdx !== this.activeIdx) return;
+    if (!p || this.ball.ownerIdx !== this.activeIdx) return false;
     // nearest teammate ahead (toward attacking goal)
     let best = -1;
     let bestScore = -Infinity;
@@ -709,7 +727,7 @@ export class MatchScene extends Phaser.Scene {
         best = i;
       }
     });
-    if (best < 0) return;
+    if (best < 0) return false;
     const t = this.players[best];
     const dx = t.x - p.x;
     const dy = t.y - p.y;
@@ -717,6 +735,32 @@ export class MatchScene extends Phaser.Scene {
     const power = Math.min(640, 300 + len * 1.4);
     this.kickBall(p, (dx / len) * power, (dy / len) * power);
     this.setActive(best);
+    return true;
+  }
+
+  // --- input buffer ------------------------------------------------------
+  // Queue an action pressed a hair before it's legal; drainInputBuffer() fires
+  // it the instant the active player owns the ball (within INPUT_BUFFER_MS).
+  private inputBuf: BufferedInput | null = null;
+  private lastReceiveAt = -1; // when the user-controlled player last collected the ball (one-touch ref)
+
+  private bufferInput(action: string, charge?: number): void {
+    this.inputBuf = { action, t: this.time.now, charge };
+  }
+
+  private drainInputBuffer(): void {
+    const buf = this.inputBuf;
+    if (!buf) return;
+    const now = this.time.now;
+    if (bufferExpired(buf, now, INPUT_BUFFER_MS)) {
+      this.inputBuf = null; // stale press — never let it fire late
+      return;
+    }
+    if (!bufferConsumable(buf, now, INPUT_BUFFER_MS)) return;
+    // only legal once the controlled player actually has the ball
+    if (this.activeIdx < 0 || this.ball.ownerIdx !== this.activeIdx) return;
+    const done = buf.action === 'shoot' ? this.fireShot(buf.charge ?? 0.5) : buf.action === 'pass' ? this.doPass() : false;
+    if (done) this.inputBuf = null;
   }
 
   private kickBall(from: Player, vx: number, vy: number): void {
@@ -954,6 +998,8 @@ export class MatchScene extends Phaser.Scene {
         // under control instead of snapping from a stale carry angle.
         const o = this.players[owner];
         this.ballCarryAng = Math.atan2(o.faceY, o.faceX);
+        // mark reception time on the controlled player (one-touch window ref, #96)
+        if (owner === this.activeIdx) this.lastReceiveAt = this.time.now;
       }
     } else {
       // carry the ball ahead of the owner: distance grows with speed (a sprint

@@ -191,3 +191,40 @@ export function easeCarryAngle(current: number, targetFacing: number, lag: numbe
   if (d < -Math.PI) d += Math.PI * 2;
   return current + d * Math.min(1, Math.max(0, lag));
 }
+
+// --- input buffering -------------------------------------------------------
+//
+// The lowest-risk, highest-feel latency win: when you press an action a hair
+// before it's legal (pass/shoot the frame before you collect the ball), queue it
+// and fire it the instant it becomes legal. This kills the "ate my input" feel
+// without changing real input timing. Buffered inputs expire so a stale press
+// can't fire seconds later, and the latest press wins.
+
+export interface BufferedInput {
+  action: string; // 'pass' | 'shoot' | (future) 'tackle' | 'through'
+  t: number; // press timestamp (ms, monotonic)
+  charge?: number; // for a pre-released charged shot
+}
+
+/** How long before it becomes legal a press still counts (ms). */
+export const INPUT_BUFFER_MS = 160;
+/** Acting within this of receiving the ball is a "one-touch" (style bonus hook, #96). */
+export const ONE_TOUCH_MS = 250;
+
+/** A buffered input is still good to fire if it's within the window (and not from the future). */
+export function bufferConsumable(buf: BufferedInput | null, now: number, windowMs = INPUT_BUFFER_MS): boolean {
+  if (!buf) return false;
+  const age = now - buf.t;
+  return age >= 0 && age <= windowMs;
+}
+
+/** A buffered input has gone stale (older than the window) and should be discarded. */
+export function bufferExpired(buf: BufferedInput | null, now: number, windowMs = INPUT_BUFFER_MS): boolean {
+  return !!buf && now - buf.t > windowMs;
+}
+
+/** Was an action taken within the one-touch window of receiving the ball? */
+export function isOneTouch(receiveT: number, actionT: number, windowMs = ONE_TOUCH_MS): boolean {
+  const dt = actionT - receiveT;
+  return dt >= 0 && dt <= windowMs;
+}
