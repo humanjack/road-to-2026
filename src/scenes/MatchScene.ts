@@ -83,7 +83,7 @@ import {
   tacticalBounds,
   type CameraView,
 } from '../core/camera';
-import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
+import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale, paceForSpeed } from '../core/timeflow';
 
 export interface MatchInit {
   homeId: string;
@@ -376,6 +376,7 @@ export class MatchScene extends Phaser.Scene {
   // --- time-fx (#126): slow-mo + hit-stop, presentation-side only ---
   private timeFlow = createTimeFlow();
   private timeScale = 1; // current presentation time scale (drives the accumulator drain)
+  private matchPace = 1; // resting tempo multiplier from the GAME SPEED setting (#184)
   private slowMoOn = true; // SLOW MOTION setting (gates all time-fx)
 
   constructor() {
@@ -438,6 +439,7 @@ export class MatchScene extends Phaser.Scene {
     const settings = getSave().settings;
     this.reduceMotion = settings.reduceMotion;
     this.slowMoOn = settings.slowMo;
+    this.matchPace = paceForSpeed(settings.gameSpeed); // GAME SPEED → resting tempo (#184)
     resetTimeFlow(this.timeFlow); // fresh match — no leftover slow-mo / hit-stop
     this.timeScale = 1;
     this.sprintToggleMode = settings.sprintMode === 'toggle';
@@ -1172,9 +1174,12 @@ export class MatchScene extends Phaser.Scene {
     this.timeScale = stepTimeScale(this.timeFlow, deltaMs);
     this.tweens.timeScale = this.timeScale; // slow tweens (banner / bloom) coherently
     this.time.timeScale = this.timeScale; // slow delayedCalls coherently
-    // accumulate real time SCALED by timeScale, THEN apply the 0.1 backlog cap so
-    // spiral-of-death protection is unchanged (cap = max 100ms of sim per frame).
-    this.acc += Math.min(0.1, (deltaMs / 1000) * this.timeScale);
+    // accumulate real time SCALED by timeScale AND the GAME SPEED tempo (#184), THEN
+    // apply the 0.1 backlog cap so spiral-of-death protection is unchanged (cap = max
+    // 100ms of sim per frame). matchPace is applied ONLY here (not to tweens/time
+    // scale above), so the whole sim plays slower while the HUD/banners stay crisp;
+    // the fixed-step count over a match is unchanged, so determinism/replays hold.
+    this.acc += Math.min(0.1, (deltaMs / 1000) * this.timeScale * this.matchPace);
     let steps = 0;
     while (this.acc >= MatchScene.FIXED_DT && steps < MatchScene.MAX_STEPS) {
       this.stepSim(MatchScene.FIXED_DT);

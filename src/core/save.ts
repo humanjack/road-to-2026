@@ -24,6 +24,7 @@ function defaultSettings(): GameSettings {
     passAssist: 'full',
     defensiveSwitch: 'auto',
     zoomLevel: 'balanced',
+    gameSpeed: 'standard', // a gentle, readable default tempo (#184)
   };
 }
 
