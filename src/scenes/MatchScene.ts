@@ -64,7 +64,17 @@ import {
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
 import { limbPose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
-import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
+import {
+  cameraTarget,
+  followStep,
+  baseZoom,
+  zoomPunchStep,
+  shakeIntensity,
+  shakeDuration,
+  parallaxShift,
+  velocityLead,
+  deadzone1d,
+} from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
 export interface MatchInit {
@@ -149,6 +159,16 @@ const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack
 const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
+// broadcast depth + follow steadiness (#172): a parallax stadium backdrop, a
+// small vertical lead that anticipates near/far runs, and a deadzone so a jostled
+// ball can't jitter the frame. All render-side (functions of sim output / scroll).
+const CAM_VLEAD_SCALE = 0.22; // vertical lead = carrier/ball vy * this (anticipate near/far runs)
+const CAM_VLEAD_CAP = 70; // px clamp on the vertical lead so a sprint/shot can't fling the frame
+const CAM_DEADZONE = 26; // px half-box the focus may roam before the frame follows (anti-jitter)
+const CAM_DEADZONE_RM = 40; // reduce-motion: a larger steady hold (an even calmer frame)
+const PARALLAX_FACTOR = 0.6; // stadium backdrop scrolls at 60% of the turf → broadcast depth
+const PARALLAX_FACTOR_RM = 0.82; // reduce-motion: a much subtler depth differential
+const PARALLAX_MARGIN = 360; // px the backdrop over-covers the world so a pan never reveals void
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
@@ -242,6 +262,7 @@ export class MatchScene extends Phaser.Scene {
   private touchVec = { x: 0, y: 0, active: false };
 
   // gfx
+  private bgGfx!: Phaser.GameObjects.Graphics; // parallax stadium backdrop (depth -1), lags the turf (#172)
   private bodyGfx!: Phaser.GameObjects.Graphics; // the footballer figures (depth 10)
   private shadowGfx!: Phaser.GameObjects.Graphics; // upright drop shadows (depth 9)
   private muteTag!: Phaser.GameObjects.Text; // shown while audio is muted
@@ -429,47 +450,73 @@ export class MatchScene extends Phaser.Scene {
   }
 
   // Centre the main camera on the pitch (kickoff framing + the fulltime beat).
-  // setScroll is auto-clamped to the camera bounds.
+  // Phaser shows world `scroll + cameraSize/2` at screen centre (zoom-independent),
+  // so centring the pitch is `pitchCentre - cameraSize/2`. setScroll is then
+  // auto-clamped to the camera bounds.
   private centerCameraOnPitch(): void {
-    const z = this.cameras.main.zoom;
-    this.cameras.main.setScroll(this.px + this.pw / 2 - GAME_W / z / 2, this.py + this.ph / 2 - GAME_H / z / 2);
+    this.cameras.main.setScroll(this.px + this.pw / 2 - GAME_W / 2, this.py + this.ph / 2 - GAME_H / 2);
   }
 
   // Broadcast-arc follow — runs once per real frame from renderEntities (NEVER
   // in stepSim). Reads sim output only and writes the main camera scroll, so it
   // cannot affect the deterministic simulation or replays. Math in core/camera.
   private updateCamera(): void {
-    if (!this.camFollow) return;
     const cam = this.cameras.main;
-    // snap-zoom punch (#127) eases back to the resting zoom; real dt → independent
-    // of slow-mo. Set the zoom BEFORE computing the follow so framing uses it.
-    this.zoomCur = zoomPunchStep(this.zoomCur, this.restZoom, this.realDtSec);
-    cam.setZoom(this.zoomCur);
-    const z = cam.zoom;
-    const viewW = GAME_W / z;
-    const viewH = GAME_H / z;
-    const owner = this.ball.ownerIdx;
-    const hasOwner = owner >= 0;
-    const cx = hasOwner ? this.players[owner].x : this.ball.x;
-    const cy = hasOwner ? this.players[owner].y : this.ball.y;
-    const attackDir = hasOwner ? (this.players[owner].side === 'home' ? 1 : -1) : 0;
-    const lead = this.reduceMotion ? 0 : CAM_LEAD;
-    cameraTarget(this.ball.x, this.ball.y, cx, cy, hasOwner, attackDir, lead, this.camTarget);
-    const lerp = this.reduceMotion ? CAM_LERP_RM : CAM_LERP;
-    followStep(cam.scrollX, cam.scrollY, this.camTarget.x, this.camTarget.y, lerp, viewW, viewH, this.worldBounds, this.camScratch);
-    cam.setScroll(this.camScratch.x, this.camScratch.y);
+    if (this.camFollow) {
+      // snap-zoom punch (#127) eases back to the resting zoom; real dt → independent
+      // of slow-mo. Set the zoom BEFORE computing the follow so framing uses it.
+      this.zoomCur = zoomPunchStep(this.zoomCur, this.restZoom, this.realDtSec);
+      cam.setZoom(this.zoomCur);
+      const z = cam.zoom;
+      const viewW = GAME_W / z;
+      const viewH = GAME_H / z;
+      const owner = this.ball.ownerIdx;
+      const hasOwner = owner >= 0;
+      const cx = hasOwner ? this.players[owner].x : this.ball.x;
+      const cy = hasOwner ? this.players[owner].y : this.ball.y;
+      const attackDir = hasOwner ? (this.players[owner].side === 'home' ? 1 : -1) : 0;
+      const lead = this.reduceMotion ? 0 : CAM_LEAD;
+      cameraTarget(this.ball.x, this.ball.y, cx, cy, hasOwner, attackDir, lead, this.camTarget);
+      // vertical lead (#172): anticipate a near/far run by nudging the frame the
+      // way the carrier / loose ball is moving in y (off under reduce-motion).
+      if (!this.reduceMotion) {
+        const vy = hasOwner ? this.players[owner].vy : this.ball.vy;
+        this.camTarget.y += velocityLead(vy, CAM_VLEAD_SCALE, CAM_VLEAD_CAP);
+      }
+      // The camera CENTRE = world point at screen centre. Phaser's scroll is that
+      // centre minus half the FULL camera size (independent of zoom), so we follow
+      // in centre space and convert back on setScroll — otherwise a zoomed view
+      // frames the focus off to one side instead of centred.
+      const camCx = cam.scrollX + GAME_W / 2;
+      const camCy = cam.scrollY + GAME_H / 2;
+      // deadzone (#172): hold the frame steady while the focus stays within a small
+      // box of the centre, so a jostled / contested ball can't jitter it.
+      const dz = this.reduceMotion ? CAM_DEADZONE_RM : CAM_DEADZONE;
+      const effX = camCx + deadzone1d(this.camTarget.x - camCx, dz);
+      const effY = camCy + deadzone1d(this.camTarget.y - camCy, dz);
+      const lerp = this.reduceMotion ? CAM_LERP_RM : CAM_LERP;
+      followStep(camCx, camCy, effX, effY, lerp, viewW, viewH, this.worldBounds, this.camScratch);
+      cam.setScroll(this.camScratch.x - GAME_W / 2, this.camScratch.y - GAME_H / 2);
+    }
+    // Parallax backdrop (#172): lag the stadium behind the turf by a fraction of
+    // the LIVE scroll. Run every frame (not gated on camFollow) so the backdrop
+    // stays glued during the goal freeze, the fulltime pan, and the pens zoom —
+    // anywhere the scroll changes outside the broadcast follow.
+    const pf = this.reduceMotion ? PARALLAX_FACTOR_RM : PARALLAX_FACTOR;
+    this.bgGfx.setPosition(parallaxShift(cam.scrollX, pf), parallaxShift(cam.scrollY, pf));
   }
 
   // --- setup -------------------------------------------------------------
 
   private drawPitch(): void {
     const aurora = getSave().cosmetics.pitch === 'aurora';
+    // Parallax stadium backdrop on its own layer BEHIND the world-locked turf
+    // (#172): deep fill + stands + crowd, over-sized so the parallax lag never
+    // reveals a void, and lagged behind the turf each frame in updateCamera. This
+    // differential on every pan is what sells the three-quarter broadcast depth.
+    this.bgGfx = this.onWorld(this.add.graphics().setDepth(-1));
+    this.drawStadiumSurround(this.bgGfx, aurora);
     const g = this.onWorld(this.add.graphics().setDepth(0));
-    g.fillStyle(C.indigo, 1);
-    g.fillRect(0, 0, GAME_W, GAME_H);
-    // Stadium surround behind the touchlines so a scrolled/zoomed broadcast frame
-    // reads as a stadium instead of blank margin (static fill; parallax is #128).
-    this.drawStadiumSurround(g, aurora);
     // turf stripes — vivid saturated pitch-lime broadcast surface (#128); the
     // aurora cosmetic still re-tints the grass cool/violet
     const stripeA = aurora ? 0x1b2a4a : C.turfA;
@@ -602,18 +649,27 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
-  // Stand bands + crowd speckle in the off-pitch margins. Drawn once into the
-  // pitch Graphics; deterministic (index-based, NO rng) so it can never shift the
-  // match's seeded random stream.
+  // Deep backdrop + stand bands + crowd speckle, drawn once into the PARALLAX
+  // layer (bgGfx, #172) and over-sized by PARALLAX_MARGIN beyond the world so the
+  // backdrop's per-frame lag can never expose a void at any scroll/zoom extreme.
+  // Deterministic (index-based, NO rng) so it can never shift the seeded stream.
   private drawStadiumSurround(g: Phaser.GameObjects.Graphics, aurora: boolean): void {
+    const M = PARALLAX_MARGIN;
+    const ox = -M;
+    const oy = -M;
+    const ow = GAME_W + 2 * M;
+    const oh = GAME_H + 2 * M;
+    // deep backdrop fills the whole over-rect (was the full-screen fill in drawPitch)
+    g.fillStyle(C.indigo, 1);
+    g.fillRect(ox, oy, ow, oh);
     const standCol = aurora ? 0x141a30 : 0x0c1722;
     const bottomY = this.py + this.ph;
     const rightX = this.px + this.pw;
     g.fillStyle(standCol, 1);
-    g.fillRect(0, 0, GAME_W, this.py); // top stand
-    g.fillRect(0, bottomY, GAME_W, GAME_H - bottomY); // bottom stand
-    g.fillRect(0, 0, this.px, GAME_H); // left stand
-    g.fillRect(rightX, 0, GAME_W - rightX, GAME_H); // right stand
+    g.fillRect(ox, oy, ow, this.py - oy); // top stand (up to the over-top edge)
+    g.fillRect(ox, bottomY, ow, oy + oh - bottomY); // bottom stand (down to the over-bottom edge)
+    g.fillRect(ox, oy, this.px - ox, oh); // left stand
+    g.fillRect(rightX, oy, ox + ow - rightX, oh); // right stand
     // faint crowd speckle on the top + bottom stands (two rows each)
     g.fillStyle(0x9aa7c7, 0.12);
     for (let i = 0; i < 64; i++) {
