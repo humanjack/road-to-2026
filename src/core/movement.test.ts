@@ -7,6 +7,8 @@ import {
   carryStreakAlpha,
   surgeCadence,
   SURGE_CADENCE_GAIN,
+  possessionShare,
+  easeToward,
   easeCarryAngle,
   CARRY_BASE,
   bufferConsumable,
@@ -1027,5 +1029,47 @@ describe('surgeCadence (#138 surge-reactive run cadence)', () => {
   it('is finite for all 0..1 inputs and guards non-finite', () => {
     for (let s = 0; s <= 1; s += 0.05) expect(Number.isFinite(surgeCadence(s))).toBe(true);
     expect(surgeCadence(NaN)).toBe(1);
+  });
+});
+
+describe('possessionShare (#143)', () => {
+  it('is 0.5 when neither side has held the ball (avoids 0/0)', () => {
+    expect(possessionShare(0, 0)).toBe(0.5);
+  });
+  it('computes the home share and clamps to [0,1]', () => {
+    expect(possessionShare(3, 1)).toBe(0.75);
+    expect(possessionShare(1, 0)).toBe(1);
+    expect(possessionShare(0, 4)).toBe(0);
+  });
+  it('home + away shares sum to 1', () => {
+    const h = possessionShare(7, 3);
+    const a = possessionShare(3, 7);
+    expect(h + a).toBeCloseTo(1, 6);
+  });
+});
+
+describe('easeToward (#143 display glide)', () => {
+  it('moves monotonically toward the target and never overshoots', () => {
+    let v = 0;
+    for (let i = 0; i < 200; i++) v = easeToward(v, 1, 1 / 60);
+    expect(v).toBeGreaterThan(0.99);
+    expect(v).toBeLessThanOrEqual(1);
+  });
+  it('each step reduces the distance to target (no oscillation)', () => {
+    let v = 0;
+    let prevDist = Infinity;
+    for (let i = 0; i < 30; i++) {
+      v = easeToward(v, 1, 1 / 60);
+      const d = Math.abs(1 - v);
+      expect(d).toBeLessThanOrEqual(prevDist);
+      prevDist = d;
+    }
+  });
+  it('clamps the step factor at large dt (never overshoots past target)', () => {
+    expect(easeToward(0, 1, 100)).toBe(1);
+  });
+  it('is a no-op for non-positive dt and recovers from non-finite cur', () => {
+    expect(easeToward(0.4, 0.9, 0)).toBe(0.4);
+    expect(easeToward(NaN, 0.7, 1 / 60)).toBe(0.7);
   });
 });

@@ -537,6 +537,27 @@ export function surgeCadence(surge01: number, gain = SURGE_CADENCE_GAIN): number
   return 1 + gain * (surge01 > 1 ? 1 : surge01);
 }
 
+// --- HUD display math (#143) -----------------------------------------------
+//
+// Pure helpers for the live possession/shots strip. Display-only — the lerped
+// value must never feed back into any sim quantity.
+
+/** Home possession share 0..1 from accrued seconds; 0.5 when neither has held it. */
+export function possessionShare(home: number, away: number): number {
+  const t = home + away;
+  if (!(t > 0)) return 0.5;
+  const s = home / t;
+  return s < 0 ? 0 : s > 1 ? 1 : s;
+}
+
+/** Frame-rate-independent exponential ease of `cur` toward `target` (rate per sec). */
+export function easeToward(cur: number, target: number, dt: number, rate = 3): number {
+  if (!Number.isFinite(cur)) return Number.isFinite(target) ? target : 0;
+  if (!Number.isFinite(target) || !Number.isFinite(dt) || dt <= 0) return cur;
+  const k = rate * dt;
+  return cur + (target - cur) * (k > 1 ? 1 : k);
+}
+
 /**
  * Resolve a tackle attempt. Out of reach → always a miss. In reach, success
  * scales monotonically with closeness, carrier exposure, and defender skill; a

@@ -53,6 +53,8 @@ import {
   PASS_CONE,
   squashStretch,
   surgeCadence,
+  possessionShare,
+  easeToward,
   type BufferedInput,
   type TackleResult,
   type PassMate,
@@ -249,6 +251,13 @@ export class MatchScene extends Phaser.Scene {
   private surgeBar!: Phaser.GameObjects.Graphics;
   private homeGrad: number[] = [];
   private awayGrad: number[] = [];
+  // live possession / shots strip (#143)
+  private possBar!: Phaser.GameObjects.Graphics;
+  private shotsHomeText!: Phaser.GameObjects.Text;
+  private shotsAwayText!: Phaser.GameObjects.Text;
+  private dispPoss = 0.5; // lerped displayed home possession share (display-only)
+  private prevShotsHome = -1;
+  private prevShotsAway = -1;
   private bannerText!: Phaser.GameObjects.Text;
   private ballGfx!: Phaser.GameObjects.Arc;
   private trailGfx!: Phaser.GameObjects.Graphics;
@@ -323,6 +332,9 @@ export class MatchScene extends Phaser.Scene {
     this.shots = { home: 0, away: 0 };
     this.onTarget = { home: 0, away: 0 };
     this.possSec = { home: 0, away: 0 };
+    this.dispPoss = 0.5; // #143 live strip display state
+    this.prevShotsHome = -1;
+    this.prevShotsAway = -1;
     this.prevHudHome = 0;
     this.prevHudAway = 0;
     this.elapsed = 0;
@@ -646,6 +658,13 @@ export class MatchScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(31);
 
+    // live possession / shots strip (#143): possession bar y 111-119, shots tally
+    // y 120-134 — all clear of the scorebox (18-74), surge bar (78-90), puHud (~89-107).
+    this.possBar = this.add.graphics().setDepth(31);
+    const shotStyle = { fontFamily: FONT_DISPLAY, fontSize: '13px', color: CSS.white } as const;
+    this.shotsHomeText = this.add.text(GAME_W / 2 - 138, 127, '', shotStyle).setOrigin(0, 0.5).setDepth(31);
+    this.shotsAwayText = this.add.text(GAME_W / 2 + 138, 127, '', shotStyle).setOrigin(1, 0.5).setDepth(31);
+
     // pause / quit
     const quit = this.add
       .text(GAME_W - 24, 30, '✕', { fontFamily: FONT_DISPLAY, fontSize: '24px', color: CSS.mid })
@@ -687,6 +706,9 @@ export class MatchScene extends Phaser.Scene {
       cg,
       this.surgeBar,
       this.puHud,
+      this.possBar,
+      this.shotsHomeText,
+      this.shotsAwayText,
       quit,
       hint,
       this.muteTag,
@@ -2626,6 +2648,43 @@ export class MatchScene extends Phaser.Scene {
       if (b.length) parts.push(`${code} ${b.join('/')}`);
     }
     this.puHud.setText(parts.join('   ·   '));
+
+    // live possession share (#143): glide toward the true value (snap under
+    // reduceMotion); shots text only re-renders when a count changes. All sourced
+    // from the existing possSec/shots fields — no new sim tracking, display-only.
+    const target = possessionShare(this.possSec.home, this.possSec.away);
+    this.dispPoss = this.reduceMotion ? target : easeToward(this.dispPoss, target, this.realDtSec);
+    this.drawPossBar();
+    if (this.shots.home !== this.prevShotsHome) {
+      this.prevShotsHome = this.shots.home;
+      this.shotsHomeText.setText(`${this.home.code}  SH ${this.shots.home} (${this.onTarget.home})`);
+    }
+    if (this.shots.away !== this.prevShotsAway) {
+      this.prevShotsAway = this.shots.away;
+      this.shotsAwayText.setText(`SH ${this.shots.away} (${this.onTarget.away})  ${this.away.code}`);
+    }
+  }
+
+  // Slim two-sided possession share bar (#143): home (left, team colour) vs away
+  // (right), split at the lerped share with a white divider. Redrawn via clear+fill
+  // each frame like drawSurgeBar — no per-frame allocation. y 111-119.
+  private drawPossBar(): void {
+    const w = 260;
+    const cx = GAME_W / 2;
+    const x0 = cx - w / 2;
+    const y = 112;
+    const h = 6;
+    const hw = w * this.dispPoss;
+    const g = this.possBar;
+    g.clear();
+    g.fillStyle(C.deep, 0.8);
+    g.fillRoundedRect(x0 - 2, y - 1, w + 4, h + 2, 4);
+    g.fillStyle(this.homeColor, 1);
+    g.fillRect(x0, y, hw, h);
+    g.fillStyle(this.awayColor, 1);
+    g.fillRect(x0 + hw, y, w - hw, h);
+    g.fillStyle(C.white, 0.9); // divider at the split
+    g.fillRect(x0 + hw - 1, y - 1, 2, h + 2);
   }
 
   // Two-sided Surge meter with a dark->bright gradient fill (precomputed
