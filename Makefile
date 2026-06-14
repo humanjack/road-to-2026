@@ -95,11 +95,18 @@ $(INSTALL_STAMP): package.json package-lock.json
 
 # ----------------------------------------------------------------------------
 # start: ensure a clean slate, then launch a single detached instance.
-# For prod, build first if no bundle exists yet. The control script stops any
-# previous instance before starting, so this never leaves duplicates running.
+# For prod, build first if no bundle exists OR the sources are newer than the
+# last build (so `make start` can never serve a stale bundle). The control
+# script stops any previous instance first, so this never leaves duplicates.
 start:
-	@if [ "$(MODE)" != "dev" ] && [ ! -f "$(DIST_DIR)/index.html" ]; then \
-		echo ">> No build found — building first ..."; $(MAKE) build; \
+	@if [ "$(MODE)" != "dev" ]; then \
+		if [ ! -f "$(DIST_DIR)/index.html" ]; then \
+			echo ">> No build found — building first ..."; $(MAKE) build; \
+		elif [ -n "`find src index.html package.json tsconfig.json vite.config.ts -newer '$(DIST_DIR)/index.html' 2>/dev/null`" ]; then \
+			echo ">> Sources changed since last build — rebuilding so the served bundle is current ..."; $(MAKE) build; \
+		else \
+			echo ">> Build is up to date — serving existing $(DIST_DIR)/."; \
+		fi; \
 	fi
 	@$(CTL_ENV) sh $(APP_CTL) start
 
