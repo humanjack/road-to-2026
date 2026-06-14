@@ -52,6 +52,7 @@ import {
   skillMove,
   PASS_CONE,
   squashStretch,
+  surgeCadence,
   type BufferedInput,
   type TackleResult,
   type PassMate,
@@ -145,6 +146,7 @@ const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no t
 const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
+const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
 // body-bump (#130): a closing speed above the threshold exchanges momentum
 const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
 const BUMP_TRANSFER = 0.4; // fraction of the closing speed exchanged
@@ -191,6 +193,13 @@ export class MatchScene extends Phaser.Scene {
   private poseScratch = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 }; // reused for limbPose (#137)
   private bumpScratch = { ax: 0, ay: 0, bx: 0, by: 0 }; // reused output for resolveBump (#130)
   private squashScratch = { sx: 1, sy: 1 }; // reused output for squashStretch (#131)
+  // Surge-reactive run cadence (#138): per-side factor + run-cycle phase, advanced
+  // once per frame (no per-player alloc); phase accumulators avoid a swing jump when
+  // surge changes the frequency.
+  private cadenceHome = 1;
+  private cadenceAway = 1;
+  private runPhaseHome = 0;
+  private runPhaseAway = 0;
   private bumpCd = 0; // body-bump sfx/fx rate-limit
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
@@ -2261,13 +2270,22 @@ export class MatchScene extends Phaser.Scene {
       this.shadowGfx.fillEllipse(p.x + 2, p.y + 3, PR * 2.1 * ds, PR * 1.45 * ds);
     }
     this.bodyGfx.clear();
-    const runT = this.reduceMotion ? 0 : this.time.now * 0.018;
+    // Surge-reactive run cadence (#138): a surging side's legs turn over faster +
+    // swing wider. Per-side factor computed ONCE per frame; per-side phase
+    // accumulators advance by real dt so changing surge never jumps the swing.
+    // Frozen under reduceMotion (the gait gate zeroes the swing regardless).
+    this.cadenceHome = surgeCadence(this.surgeHome / 100);
+    this.cadenceAway = surgeCadence(this.surgeAway / 100);
+    if (!this.reduceMotion) {
+      this.runPhaseHome += this.realDtSec * RUN_BASE_FREQ * this.cadenceHome;
+      this.runPhaseAway += this.realDtSec * RUN_BASE_FREQ * this.cadenceAway;
+    }
     // y-sort into a reused scratch array (no per-frame array copy)
     const order = this.renderOrder;
     for (let i = 0; i < this.players.length; i++) order[i] = this.players[i];
     order.length = this.players.length;
     order.sort((a, b) => a.y - b.y);
-    for (let i = 0; i < order.length; i++) this.drawPlayer(order[i], runT);
+    for (let i = 0; i < order.length; i++) this.drawPlayer(order[i]);
 
     const bz = this.ball.z;
     this.ballGfx.setPosition(this.ball.x, this.ball.y - bz); // lifted by height when airborne (#132)
@@ -2391,10 +2409,14 @@ export class MatchScene extends Phaser.Scene {
   // contralateral gait whose amplitude scales with speed; reduce-motion freezes
   // the swing (the figure still turns to face its heading — orientation, not
   // motion decoration). Everything is in units of PR so it scales with the body.
-  private drawPlayer(p: Player, runT: number): void {
+  private drawPlayer(p: Player): void {
     // a single non-finite coord would poison the whole batched Graphics (one bad
     // translateCanvas blanks every figure), so skip a corrupted player outright
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    // Surge-reactive cadence (#138): per-side run-cycle phase + amplitude factor
+    const home = p.side === 'home';
+    const runT = this.reduceMotion ? 0 : home ? this.runPhaseHome : this.runPhaseAway;
+    const cad = home ? this.cadenceHome : this.cadenceAway;
     // smooth the facing so quick AI re-targets / near-target velocity zeroing
     // don't make the figure twitch or spin in place
     const fl = Math.hypot(p.faceX, p.faceY) || 1;
@@ -2404,8 +2426,9 @@ export class MatchScene extends Phaser.Scene {
     p.renderAng = Phaser.Math.Angle.Wrap(p.renderAng + dA * (this.reduceMotion ? 1 : 0.3));
 
     const speed = Math.hypot(p.vx, p.vy);
-    // reduceMotion freezes the run swing (gait 0); committed poses still render
-    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1); // 200 ≈ base playerSpeed
+    // reduceMotion freezes the run swing (gait 0); committed poses still render.
+    // The surge cadence widens the swing for a surging side (amplitude, #138).
+    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad; // 200 ≈ base playerSpeed
 
     // Pick the active pose from the player's sim-ticked countdowns (#137); 'run' uses
     // the continuous clock, the rest a 0..1 progress. limbPose('run') is the exact
@@ -2451,18 +2474,35 @@ export class MatchScene extends Phaser.Scene {
     if (sq && (sq.sx !== 1 || sq.sy !== 1)) g.scaleCanvas(sq.sx, sq.sy);
 
     // limbs first (under the torso), offset per the active pose, contralateral
-    this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg
-    this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, pose.nearLeg, p.shorts); // near leg
-    this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, pose.farArm, p.skin); // far arm
-    this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, pose.nearArm, p.skin); // near arm
+    if (p.role === 'GK') {
+      // keeper silhouette (#138): glove-arms spread WIDE + reaching, with bright
+      // mitts, so a keeper reads by SHAPE not just kit colour (an accessibility win
+      // on top of the centre-dot identity). Pose offsets still apply, so a dive
+      // (#137) throws the gloves laterally and a set keeper holds them out.
+      this.drawLimb(g, -0.18 * PR, 0.28 * PR, 0.7 * PR, 0.34 * PR, pose.farLeg * 0.6, p.shorts); // planted legs
+      this.drawLimb(g, -0.18 * PR, -0.28 * PR, 0.7 * PR, 0.34 * PR, pose.nearLeg * 0.6, p.shorts);
+      this.drawLimb(g, 0.32 * PR, 1.02 * PR, 0.82 * PR, 0.3 * PR, pose.farArm * 0.6, p.skin); // wide far glove-arm
+      this.drawLimb(g, 0.32 * PR, -1.02 * PR, 0.82 * PR, 0.3 * PR, pose.nearArm * 0.6, p.skin); // wide near glove-arm
+      g.fillStyle(C.light, 1); // bright glove mitts at the reaching hand ends
+      g.fillCircle(0.7 * PR + pose.farArm * 0.6, 1.02 * PR, 0.28 * PR);
+      g.fillCircle(0.7 * PR + pose.nearArm * 0.6, -1.02 * PR, 0.28 * PR);
+    } else {
+      this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg
+      this.drawLimb(g, -0.3 * PR, -0.3 * PR, 0.78 * PR, 0.34 * PR, pose.nearLeg, p.shorts); // near leg
+      this.drawLimb(g, 0.05 * PR, 0.72 * PR, 0.62 * PR, 0.26 * PR, pose.farArm, p.skin); // far arm
+      this.drawLimb(g, 0.05 * PR, -0.72 * PR, 0.62 * PR, 0.26 * PR, pose.nearArm, p.skin); // near arm
+    }
 
     // hips (shorts) then torso (kit) — torso is wider across the shoulders (y)
     g.fillStyle(p.shorts, 1);
     g.fillEllipse(-0.15 * PR, 0, 1.15 * PR, 1.3 * PR);
     g.fillStyle(p.kit, 1);
     g.fillEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
-    // contrast rim so dark kits keep a crisp edge against the dark pitch
-    g.lineStyle(1.5, p.rim, 0.5);
+    // contrast rim so dark kits keep a crisp edge against the pitch; the surging
+    // side's rim brightens slightly (#138 tint) — render-only, steady under
+    // reduceMotion (surge is sim state, not a time pulse).
+    const surgeSide = home ? this.surgeHome : this.surgeAway;
+    g.lineStyle(1.5, p.rim, 0.5 + 0.35 * Phaser.Math.Clamp(surgeSide / 100, 0, 1));
     g.strokeEllipse(0.05 * PR, 0, 1.45 * PR, 1.65 * PR);
     // shoulder caps — lightened kit, a cheap fake top-light that gives the torso form
     g.fillStyle(p.shoulderHi, 1);
