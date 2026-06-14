@@ -234,6 +234,59 @@ export function rippleAmplitude(age: number, settle = 0.5, maxAmp = 7): number {
   return maxAmp * (1 - age / settle);
 }
 
+// --- lofted ball (chip / lofted through-ball) ------------------------------
+//
+// Some kicks become airborne and arc over ground-level interception (a chip over
+// a charging keeper, a lofted through-ball over a flat line). The ball gets a
+// height channel (z, vz) integrated per fixed step from ball state, so it's
+// deterministic; while airborne it can't be collected/saved by a ground player.
+
+/** Vertical acceleration (px/s²) pulling an airborne ball back to the pitch. */
+export const LOFT_GRAVITY = 900;
+
+/**
+ * Launch parameters for a lofted ball that lands after a parabolic arc: choose a
+ * hang time from the travel distance + horizontal speed (clamped to a readable
+ * arc), then the `vz` that returns z to 0 at `hangTime`. Pure.
+ */
+export function loftLaunch(
+  dist: number,
+  speed: number,
+  gravity = LOFT_GRAVITY,
+  minHang = 0.45,
+  maxHang = 1.1,
+): { vz: number; hangTime: number } {
+  const d = Number.isFinite(dist) ? Math.max(0, dist) : 0;
+  const s = Number.isFinite(speed) ? Math.max(1, speed) : 1;
+  const hang = Math.min(maxHang, Math.max(minHang, d / s));
+  return { vz: 0.5 * gravity * hang, hangTime: hang };
+}
+
+/**
+ * Is point (px,py) within `radius` of the segment (ax,ay)→(bx,by) AND strictly
+ * between its ends? Used to detect a defender sitting IN the passing lane (so a
+ * through-ball should be lofted over them) rather than at the carrier or target.
+ */
+export function segmentBlocked(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  px: number,
+  py: number,
+  radius: number,
+): boolean {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1) return false;
+  const t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  if (t <= 0.1 || t >= 0.95) return false; // at/behind the carrier, or at the target
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy) <= radius;
+}
+
 // --- sprint & stamina ------------------------------------------------------
 //
 // Sprint is a managed burst, not a free always-on button. While sprinting the
