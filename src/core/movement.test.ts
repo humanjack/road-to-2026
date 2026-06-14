@@ -26,6 +26,7 @@ import {
   assignMarks,
   markPoint,
   shotPower01,
+  skillMove,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -549,5 +550,27 @@ describe('shotPower01', () => {
     expect(shotPower01(5000)).toBe(1); // clamped
     expect(shotPower01(-10)).toBe(0);
     expect(shotPower01(NaN)).toBe(0);
+  });
+});
+
+describe('skillMove', () => {
+  it('knock-and-go along facing when input is forward or absent', () => {
+    const none = skillMove(1, 0, 0, 0); // facing +x, no input
+    expect(none.type).toBe('knock');
+    expect(none.dx).toBeCloseTo(1, 5);
+    const fwd = skillMove(1, 0, 1, 0.2); // input roughly forward
+    expect(fwd.type).toBe('knock');
+  });
+  it('side-steps in the input direction when input is lateral to facing', () => {
+    const up = skillMove(1, 0, 0, -1); // facing +x, flick up
+    expect(up.type).toBe('sidestep');
+    expect(up.dy).toBeCloseTo(-1, 5);
+    const down = skillMove(1, 0, 0, 1);
+    expect(down.type).toBe('sidestep');
+    expect(down.dy).toBeCloseTo(1, 5);
+  });
+  it('returns a unit direction', () => {
+    const s = skillMove(0, 1, 1, 0); // facing +y, flick +x → sidestep
+    expect(Math.hypot(s.dx, s.dy)).toBeCloseTo(1, 5);
   });
 });

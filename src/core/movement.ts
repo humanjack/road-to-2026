@@ -564,3 +564,34 @@ export function shotPower01(speed: number, maxPower = 980): number {
   if (!Number.isFinite(speed) || maxPower <= 0) return 0;
   return Math.min(1, Math.max(0, speed / maxPower));
 }
+
+// --- skill moves -----------------------------------------------------------
+//
+// A lightweight 1v1 toolkit: while carrying, a skill input jinks the ball. With
+// a lateral input it's a side-step (shift the ball to that side and burst); with
+// a forward / no input it's a knock-and-go (push the ball ahead and accelerate
+// past your man). Kept to these two readable moves — arcade, not a move list.
+
+export interface SkillMove {
+  dx: number; // unit direction of the jink (and the body burst)
+  dy: number;
+  type: 'sidestep' | 'knock';
+}
+
+/**
+ * Resolve a skill from the carrier's facing and held input. Forward-ish or no
+ * input → knock-and-go along facing; a clearly lateral input → side-step in the
+ * input direction. Returns a unit direction + the move type.
+ */
+export function skillMove(faceX: number, faceY: number, inX: number, inY: number): SkillMove {
+  const fl = Math.hypot(faceX, faceY) || 1;
+  const fx = faceX / fl;
+  const fy = faceY / fl;
+  const il = Math.hypot(inX, inY);
+  if (il < 0.3) return { dx: fx, dy: fy, type: 'knock' }; // no clear input → go forward
+  const ix = inX / il;
+  const iy = inY / il;
+  const dot = ix * fx + iy * fy; // how forward-aligned the input is
+  if (dot > 0.6) return { dx: fx, dy: fy, type: 'knock' }; // input mostly forward → knock-and-go
+  return { dx: ix, dy: iy, type: 'sidestep' }; // lateral input → side-step that way
+}

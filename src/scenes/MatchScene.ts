@@ -36,6 +36,7 @@ import {
   assignMarks,
   markPoint,
   shotPower01,
+  skillMove,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -376,7 +377,7 @@ export class MatchScene extends Phaser.Scene {
     quit.on('pointerdown', () => this.abandon());
 
     this.add
-      .text(24, GAME_H - 22, 'Move: WASD   ·   Shoot: hold Space   ·   Pass: J   ·   Through: L   ·   Tackle: I (hold=slide)   ·   Switch: K', {
+      .text(24, GAME_H - 22, 'Move WASD · Shoot Space · Pass J · Through L · Tackle I (hold=slide) · Skill O · Switch K', {
         fontFamily: FONT_BODY,
         fontSize: '14px',
         color: CSS.mid,
@@ -467,7 +468,7 @@ export class MatchScene extends Phaser.Scene {
 
   private setupInput(): void {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,L,M,I,SHIFT') as Record<
+    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,L,M,I,O,SHIFT') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -515,6 +516,7 @@ export class MatchScene extends Phaser.Scene {
       if (!this.doThroughBall()) this.bufferInput('through'); // lead a runner into space
     });
     this.keys.K.on('down', () => this.manualSwitch());
+    this.keys.O.on('down', () => this.doSkill()); // skill move: side-step / knock-and-go
     // Sprint toggle mode: tapping SHIFT flips sprint on/off (vs hold-to-sprint).
     this.keys.SHIFT.on('down', () => {
       if (this.sprintToggleMode) this.sprintToggled = !this.sprintToggled;
@@ -658,6 +660,7 @@ export class MatchScene extends Phaser.Scene {
     // PLAY
     this.elapsed += dt;
     if (this.switchCd > 0) this.switchCd -= dt;
+    if (this.skillCd > 0) this.skillCd -= dt;
     this.updateActiveSelection();
     this.updateTackleInput(); // hold I past the threshold → committed slide
     this.updateUserControl(dt);
@@ -727,6 +730,26 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private switchCd = 0; // brief cooldown so tapping switch can't thrash control
+  private skillCd = 0; // cooldown between skill moves
+
+  // Skill move (carry only): jink the ball + burst. A lateral input side-steps
+  // that way; forward/no input is a knock-and-go down the facing. On cooldown.
+  private doSkill(): void {
+    if (this.skillCd > 0) return;
+    const p = this.players[this.activeIdx];
+    if (!p || this.ball.ownerIdx !== this.activeIdx) return; // only while carrying
+    const inp = this.inputVector();
+    const m = skillMove(p.faceX, p.faceY, inp.x, inp.y);
+    // body burst + speed pop, and snap facing + the ball to the jink direction
+    p.vx += m.dx * 215;
+    p.vy += m.dy * 215;
+    p.faceX = m.dx;
+    p.faceY = m.dy;
+    this.ballCarryAng = Math.atan2(m.dy, m.dx); // sharp touch onto the new side
+    this.skillCd = 0.7;
+    if (!this.reduceMotion) this.fxSpark(this.ball.x, this.ball.y, C.cyan);
+    audio.play('pass');
+  }
 
   private manualSwitch(): void {
     if (this.switchCd > 0) return;
