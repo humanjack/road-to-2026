@@ -9,6 +9,7 @@ import { RNG, randomSeed } from '../core/rng';
 import {
   approachVelocity,
   turnBleed,
+  resolveBump,
   stepStamina,
   carryOffset,
   easeCarryAngle,
@@ -133,6 +134,10 @@ const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
+// body-bump (#130): a closing speed above the threshold exchanges momentum
+const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
+const BUMP_TRANSFER = 0.4; // fraction of the closing speed exchanged
+const BUMP_CAP = 320; // clamp post-bump speed so a pile-up can't explode
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -162,6 +167,8 @@ export class MatchScene extends Phaser.Scene {
   private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
   private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
   private poseScratch = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 }; // reused for limbPose (#137)
+  private bumpScratch = { ax: 0, ay: 0, bx: 0, by: 0 }; // reused output for resolveBump (#130)
+  private bumpCd = 0; // body-bump sfx/fx rate-limit
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
   private activeIdx = -1;
 
@@ -1632,6 +1639,7 @@ export class MatchScene extends Phaser.Scene {
   // --- physics -----------------------------------------------------------
 
   private integratePlayers(dt: number): void {
+    if (this.bumpCd > 0) this.bumpCd -= dt; // body-bump sfx/fx rate-limit (#130)
     for (const p of this.players) {
       // tick tackle cooldown + post-slide recovery lockout
       if (p.tackleCd > 0) p.tackleCd = Math.max(0, p.tackleCd - dt);
@@ -1664,9 +1672,36 @@ export class MatchScene extends Phaser.Scene {
           a.y -= uy * push;
           b.x += ux * push;
           b.y += uy * push;
+          // shoulder-barge: a firm closing along the contact normal exchanges momentum
+          // so a fast body knocks a slow one and loses a little pace (#130). Loop order
+          // is fixed → deterministic; ball.ownerIdx is untouched (possession intact).
+          const closing = (a.vx - b.vx) * ux + (a.vy - b.vy) * uy;
+          if (closing > BUMP_THRESHOLD) {
+            const r = resolveBump(a.vx, a.vy, b.vx, b.vy, ux, uy, BUMP_TRANSFER, BUMP_CAP, this.bumpScratch);
+            a.vx = r.ax;
+            a.vy = r.ay;
+            b.vx = r.bx;
+            b.vy = r.by;
+            this.onBodyBump((a.x + b.x) / 2, (a.y + b.y) / 2);
+          }
         }
       }
     }
+  }
+
+  // Body-bump feedback (#130): a soft thud + a scuff, both rate-limited so a
+  // pile-up doesn't spam. Audio is feel (not reduceMotion-gated); the scuff is
+  // gated and uses NO rng, so it never perturbs the sim's deterministic stream.
+  private onBodyBump(x: number, y: number): void {
+    if (this.bumpCd > 0) return;
+    this.bumpCd = 0.1;
+    audio.play('bump');
+    if (!this.reduceMotion) this.fxScuff(x, y);
+  }
+
+  private fxScuff(x: number, y: number): void {
+    const d = this.onWorld(this.add.circle(x, y, 3, 0xcfcad6, 0.45).setDepth(8));
+    this.tweens.add({ targets: d, scale: 2, alpha: 0, duration: 280, onComplete: () => d.destroy() });
   }
 
   private updateBall(dt: number): void {
