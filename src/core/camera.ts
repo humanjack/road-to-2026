@@ -273,6 +273,38 @@ export function tacticalBounds(
   return out;
 }
 
+// --- broadcast-perspective warp (#192) -------------------------------------
+
+/**
+ * Horizontal broadcast-perspective warp: squeeze a world `x` toward the pitch
+ * centre-line the further it lies toward the FAR (top, low-y) touchline, so the
+ * pitch renders as a 3/4 broadcast TRAPEZOID (far end narrower) instead of dead-
+ * flat. `y` is deliberately UNCHANGED — only x is warped — so the camera's vertical
+ * follow and all y-based logic (depth scale, y-sort) are untouched: a low-risk
+ * subset of a full perspective projection. The warp is a pure function of pitch
+ * POSITION (not the camera), so it stays consistent under pan/zoom. `t=(y-py)/ph`
+ * goes 0 (far) → 1 (near); the horizontal squeeze eases `kFar` → `kNear` over it.
+ * Every world-space draw (pitch, players, ball, overlays) AND the camera focus run
+ * their x through this so they all sit on the same trapezoid. Pure, allocation-free.
+ */
+export function pitchWarpX(
+  x: number,
+  y: number,
+  px: number,
+  py: number,
+  pw: number,
+  ph: number,
+  kFar = 0.78,
+  kNear = 1.0,
+): number {
+  if (!(ph > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return x;
+  const t = (y - py) / ph;
+  const tc = t < 0 ? 0 : t > 1 ? 1 : t;
+  const squeeze = kFar + (kNear - kFar) * tc;
+  const cx = px + pw / 2;
+  return cx + (x - cx) * squeeze;
+}
+
 // --- screen-shake curve (#139, retuned #shake-polish) -----------------------
 //
 // Shake is RESERVED for the rare, intentional moments (a goal, a screamer, the

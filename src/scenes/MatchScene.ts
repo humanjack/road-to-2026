@@ -84,6 +84,7 @@ import {
   shakeIntensity,
   shakeDuration,
   shakeZoomScale,
+  pitchWarpX,
   parallaxShift,
   velocityLead,
   deadzone1d,
@@ -252,6 +253,7 @@ const GOAL_H = 360; // mouth height — old 168/560 ≈ 0.30; new 360/1216 ≈ 0
 const WORLD_MARGIN = 112; // run-off/stand strip between the pitch and the world edge
 const WORLD_W = PITCH_X + PITCH_W + WORLD_MARGIN; // 2400
 const WORLD_H = PITCH_Y + PITCH_H + WORLD_MARGIN; // 1440
+const PERSP_FAR = 0.74; // broadcast-perspective (#192): the far touchline renders at 74% of the near width
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // celebrate-hop phase rate (rad/s); the run GAIT is now per-player displacement-driven (#185)
@@ -550,6 +552,42 @@ export class MatchScene extends Phaser.Scene {
     return o;
   }
 
+  // Broadcast-perspective x-warp (#192): every world-space draw routes its x through
+  // this so the pitch + all entities sit on the same 3/4 trapezoid (far end narrower).
+  // y is unchanged, so depth/sort/camera-y are untouched. Pure passthrough to the core.
+  private wx(x: number, y: number): number {
+    return pitchWarpX(x, y, this.px, this.py, this.pw, this.ph, PERSP_FAR, 1.0);
+  }
+
+  // A flat rect drawn as a perspective-warped quad (#192) — its top edge (far) is
+  // narrower than its bottom (near). `stroke` outlines it, else it's filled. Used
+  // for the pitch outline, turf stripes and penalty boxes so they sit on the trapezoid.
+  private wQuad(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, stroke: boolean): void {
+    g.beginPath();
+    g.moveTo(this.wx(x, y), y);
+    g.lineTo(this.wx(x + w, y), y);
+    g.lineTo(this.wx(x + w, y + h), y + h);
+    g.lineTo(this.wx(x, y + h), y + h);
+    g.closePath();
+    if (stroke) g.strokePath();
+    else g.fillPath();
+  }
+
+  // A flat circle drawn as a warped polyline (#192) so the centre circle reads as an
+  // ellipse narrowing toward the far touchline. Sampled at 40 points; stroke only.
+  private wCircle(g: Phaser.GameObjects.Graphics, cx: number, cy: number, r: number): void {
+    const N = 40;
+    g.beginPath();
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (i === 0) g.moveTo(this.wx(x, y), y);
+      else g.lineTo(this.wx(x, y), y);
+    }
+    g.strokePath();
+  }
+
   // Route a screen-space HUD object so the world camera ignores it — it stays
   // pinned to the screen and unscaled regardless of follow/zoom.
   private onUi<T extends Phaser.GameObjects.GameObject>(o: T): T {
@@ -639,7 +677,9 @@ export class MatchScene extends Phaser.Scene {
       const cy = hasOwner ? this.players[owner].y : this.ball.y;
       const attackDir = hasOwner ? (this.players[owner].side === 'home' ? 1 : -1) : 0;
       const lead = this.reduceMotion ? 0 : CAM_LEAD;
-      cameraTarget(this.ball.x, this.ball.y, cx, cy, hasOwner, attackDir, lead, this.camTarget);
+      // follow the WARPED focus x (#192) so the camera tracks the ball/carrier where
+      // it actually renders on the perspective trapezoid; y is unwarped as always.
+      cameraTarget(this.wx(this.ball.x, this.ball.y), this.ball.y, this.wx(cx, cy), cy, hasOwner, attackDir, lead, this.camTarget);
       // vertical lead (#172): anticipate a near/far run by nudging the frame the
       // way the carrier / loose ball is moving in y (off under reduce-motion).
       if (!this.reduceMotion) {
@@ -684,46 +724,50 @@ export class MatchScene extends Phaser.Scene {
     // aurora cosmetic still re-tints the grass cool/violet
     const stripeA = aurora ? 0x1b2a4a : C.turfA;
     const stripeB = aurora ? 0x16223d : C.turfB;
+    // All pitch geometry is drawn through the broadcast-perspective warp (#192) so
+    // the turf + markings form a 3/4 trapezoid (far/top edge narrower than near).
     const stripes = 10;
     for (let i = 0; i < stripes; i++) {
       g.fillStyle(i % 2 === 0 ? stripeA : stripeB, 1);
-      g.fillRect(this.px + (this.pw / stripes) * i, this.py, this.pw / stripes, this.ph);
+      this.wQuad(g, this.px + (this.pw / stripes) * i, this.py, this.pw / stripes, this.ph, false);
     }
     if (aurora) {
       g.fillStyle(0x7b5cff, 0.12);
-      g.fillRect(this.px, this.py, this.pw, this.ph * 0.4);
+      this.wQuad(g, this.px, this.py, this.pw, this.ph * 0.4, false);
       g.fillStyle(0x19d3f0, 0.08);
-      g.fillRect(this.px, this.py, this.pw, this.ph * 0.22);
+      this.wQuad(g, this.px, this.py, this.pw, this.ph * 0.22, false);
     }
-    // depth/lighting (drawn once, under the crisp line work): a soft light
-    // top-left, a soft shade bottom-right, and a faint colour glow from each
-    // goal end. Kept very low alpha so players/ball stay perfectly readable.
-    this.softGlow(g, this.px + this.pw * 0.3, this.py + this.ph * 0.25, 520, 0xffffff, 0.05);
-    this.softGlow(g, this.px + this.pw * 0.75, this.py + this.ph * 0.8, 560, C.deep, 0.1);
-    this.softGlow(g, this.px + 95, this.py + this.ph / 2, 380, this.homeColor, 0.06);
-    this.softGlow(g, this.px + this.pw - 95, this.py + this.ph / 2, 380, this.awayColor, 0.06);
+    // depth/lighting (drawn once, under the crisp line work): a soft light top-left,
+    // a soft shade bottom-right, and a faint colour glow from each goal end. Centre
+    // is warped (the soft radial blob itself stays round — fine for a light).
+    const midx = this.px + this.pw / 2;
+    const midy = this.py + this.ph / 2;
+    this.softGlow(g, this.wx(this.px + this.pw * 0.3, this.py + this.ph * 0.25), this.py + this.ph * 0.25, 520, 0xffffff, 0.05);
+    this.softGlow(g, this.wx(this.px + this.pw * 0.75, this.py + this.ph * 0.8), this.py + this.ph * 0.8, 560, C.deep, 0.1);
+    this.softGlow(g, this.wx(this.px + 95, midy), midy, 380, this.homeColor, 0.06);
+    this.softGlow(g, this.wx(this.px + this.pw - 95, midy), midy, 380, this.awayColor, 0.06);
 
     g.lineStyle(3, 0xffffff, 0.68); // crisper markings on the brighter turf (#128)
-    g.strokeRect(this.px, this.py, this.pw, this.ph);
-    g.lineBetween(this.px + this.pw / 2, this.py, this.px + this.pw / 2, this.py + this.ph);
-    g.strokeCircle(this.px + this.pw / 2, this.py + this.ph / 2, 136);
+    this.wQuad(g, this.px, this.py, this.pw, this.ph, true); // pitch outline → trapezoid
+    g.lineBetween(this.wx(midx, this.py), this.py, this.wx(midx, this.py + this.ph), this.py + this.ph); // halfway line
+    this.wCircle(g, midx, midy, 136); // centre circle → narrows with depth
     g.fillStyle(0xffffff, 0.8);
-    g.fillCircle(this.px + this.pw / 2, this.py + this.ph / 2, 5);
+    g.fillCircle(this.wx(midx, midy), midy, 5);
     // goals + penalty boxes (depth + height scaled for the 11v11 pitch #183)
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
     const boxDepth = 232;
     const boxH = this.goalH + 260;
     const byy = this.py + this.ph / 2 - boxH / 2;
-    g.strokeRect(this.px, byy, boxDepth, boxH);
-    g.strokeRect(this.px + this.pw - boxDepth, byy, boxDepth, boxH);
+    this.wQuad(g, this.px, byy, boxDepth, boxH, true);
+    this.wQuad(g, this.px + this.pw - boxDepth, byy, boxDepth, boxH, true);
     // goal frame (#135): the mouth line + post caps top & bottom so the goal reads
     // as a structure (the live net mesh is drawn separately in netGfx).
     for (const gx of [this.px, this.px + this.pw]) {
       g.lineStyle(5, C.gold, 0.95);
-      g.lineBetween(gx, gy0, gx, gy0 + this.goalH);
+      g.lineBetween(this.wx(gx, gy0), gy0, this.wx(gx, gy0 + this.goalH), gy0 + this.goalH);
       g.fillStyle(C.gold, 1);
-      g.fillCircle(gx, gy0, 7);
-      g.fillCircle(gx, gy0 + this.goalH, 7);
+      g.fillCircle(this.wx(gx, gy0), gy0, 7);
+      g.fillCircle(this.wx(gx, gy0 + this.goalH), gy0 + this.goalH, 7);
     }
     // corner flags (#191): a short pole + a little pennant at each pitch corner
     const rX = this.px + this.pw;
@@ -735,10 +779,11 @@ export class MatchScene extends Phaser.Scene {
       [rX, bY, -1],
     ] as [number, number, number][]) {
       const poleTop = cyF - 26; // pole rises up-screen from the corner (billboard convention)
+      const wcx = this.wx(cxF, cyF);
       g.lineStyle(2, 0xe8e8ee, 0.9);
-      g.lineBetween(cxF, cyF, cxF, poleTop);
+      g.lineBetween(wcx, cyF, wcx, poleTop);
       g.fillStyle(C.flare, 0.95);
-      g.fillTriangle(cxF, poleTop, cxF, poleTop + 10, cxF + dir * 14, poleTop + 5); // pennant
+      g.fillTriangle(wcx, poleTop, wcx, poleTop + 10, wcx + dir * 14, poleTop + 5); // pennant
     }
   }
 
@@ -775,12 +820,12 @@ export class MatchScene extends Phaser.Scene {
       for (let r = 0; r <= rows; r++) {
         const yy = this.goalGy0 + (this.goalGy1 - this.goalGy0) * (r / rows);
         const bx = rippleHere ? base + goal.dir * wobble * Math.exp(-Math.abs(yy - this.rippleY) / 45) : base;
-        g.lineBetween(goal.x, yy, bx, yy);
+        g.lineBetween(this.wx(goal.x, yy), yy, this.wx(bx, yy), yy); // warped (#192)
       }
       const cols = 4;
       for (let c = 1; c <= cols; c++) {
         const xx = goal.x + goal.dir * depth * (c / cols);
-        g.lineBetween(xx, this.goalGy0, xx, this.goalGy1);
+        g.lineBetween(this.wx(xx, this.goalGy0), this.goalGy0, this.wx(xx, this.goalGy1), this.goalGy1); // warped (#192)
       }
     }
   }
@@ -1072,7 +1117,7 @@ export class MatchScene extends Phaser.Scene {
       }
       const ds = depthScale(p.y, this.py, this.ph);
       lab.visible = true;
-      lab.setPosition(p.x, p.y + 9 * ds);
+      lab.setPosition(this.wx(p.x, p.y), p.y + 9 * ds); // warped onto the trapezoid (#192)
       lab.setScale(ds);
       if (p.isUser) {
         lab.setTint(0xffc53d); // gold — matches the active chevron/ring
@@ -1529,7 +1574,7 @@ export class MatchScene extends Phaser.Scene {
   // switch (reduceMotion: skipped — the gold active ring already marks it).
   private flashSwitch(p: Player): void {
     if (this.reduceMotion) return;
-    const ring = this.onWorld(this.add.circle(p.x, p.y, PR + 6).setStrokeStyle(3, C.gold, 1).setDepth(21));
+    const ring = this.onWorld(this.add.circle(this.wx(p.x, p.y), p.y, PR + 6).setStrokeStyle(3, C.gold, 1).setDepth(21)); // warped (#192)
     this.tweens.add({
       targets: ring,
       scale: 2.1,
@@ -1604,7 +1649,7 @@ export class MatchScene extends Phaser.Scene {
 
   private fxSpark(x: number, y: number, color: number): void {
     if (this.reduceMotion) return;
-    const ring = this.onWorld(this.add.circle(x, y, BR + 1).setStrokeStyle(2, color, 0.9).setDepth(16));
+    const ring = this.onWorld(this.add.circle(this.wx(x, y), y, BR + 1).setStrokeStyle(2, color, 0.9).setDepth(16)); // warped (#192)
     this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: 240, ease: 'Quad.easeOut', onComplete: () => ring.destroy() });
   }
 
@@ -2721,7 +2766,7 @@ export class MatchScene extends Phaser.Scene {
     for (const p of this.players) {
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
       const ds = depthScale(p.y, this.py, this.ph); // shadow shrinks with the figure (#128)
-      this.shadowGfx.fillEllipse(p.x + 2, p.y + 3, PR * 2.1 * ds, PR * 1.45 * ds);
+      this.shadowGfx.fillEllipse(this.wx(p.x, p.y) + 2, p.y + 3, PR * 2.1 * ds, PR * 1.45 * ds);
     }
     this.bodyGfx.clear();
     // Surge-reactive run cadence (#138): a surging side's legs turn over faster +
@@ -2742,7 +2787,7 @@ export class MatchScene extends Phaser.Scene {
     for (let i = 0; i < order.length; i++) this.drawPlayer(order[i]);
 
     const bz = this.ball.z;
-    this.ballGfx.setPosition(this.ball.x, this.ball.y - bz); // lifted by height when airborne (#132)
+    this.ballGfx.setPosition(this.wx(this.ball.x, this.ball.y), this.ball.y - bz); // lifted by height when airborne (#132); warped (#192)
     this.ballGfx.setScale(1 + bz * 0.004); // grows slightly when high
 
     // ball trail (afterimages): a LOOSE fast ball, OR a sprint knock-on where the
@@ -2779,12 +2824,12 @@ export class MatchScene extends Phaser.Scene {
     this.ballTrail.forEach((t, i) => {
       const f = i / this.ballTrail.length;
       this.trailGfx.fillStyle(trailTint, f * trailMax);
-      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + f * 0.6) * headScale);
+      this.trailGfx.fillCircle(this.wx(t.x, t.y), t.y, BR * (0.4 + f * 0.6) * headScale); // warped (#192)
     });
     // full-screamer comet core: a brighter hot head on the ball itself
     if (hotShot && heat.comet) {
       this.trailGfx.fillStyle(C.white, 0.5);
-      this.trailGfx.fillCircle(this.ball.x, this.ball.y, BR * 0.9);
+      this.trailGfx.fillCircle(this.wx(this.ball.x, this.ball.y), this.ball.y, BR * 0.9);
     }
     // airborne ball shadow on the pitch at the true ground point (#132): the cue the
     // ball is lofted (unreachable by ground players). Renders under reduceMotion too.
@@ -2819,7 +2864,7 @@ export class MatchScene extends Phaser.Scene {
     // overlay never looks oversized against the smaller silhouette
     for (const p of this.players) {
       this.dyn.fillStyle(p.side === 'home' ? C.deep : C.white, 0.85);
-      this.dyn.fillCircle(p.x, p.y, 4 * depthScale(p.y, this.py, this.ph));
+      this.dyn.fillCircle(this.wx(p.x, p.y), p.y, 4 * depthScale(p.y, this.py, this.ph));
     }
     // possession ring on the actual ball owner (team colour), under the gold
     // active ring so a viewer can tell who HOLDS the ball, not just who's active
@@ -2827,25 +2872,26 @@ export class MatchScene extends Phaser.Scene {
       const owner = this.players[this.ball.ownerIdx];
       const ocol = owner.side === 'home' ? this.homeColor : this.awayColor;
       this.dyn.lineStyle(3, ocol, 0.4 + 0.25 * this.pulse);
-      this.dyn.strokeCircle(owner.x, owner.y, (PR + 9) * depthScale(owner.y, this.py, this.ph));
+      this.dyn.strokeCircle(this.wx(owner.x, owner.y), owner.y, (PR + 9) * depthScale(owner.y, this.py, this.ph));
     }
     // carried-ball exposure cue (#136): a brightening ring on the BALL when the touch
     // is knocked loose off the foot — the "contest it now" signal. It is INFORMATION,
     // so unlike the streak it renders under reduceMotion too. Scales with exposure.
     if (carrier && carryExposure > CARRY_EXPOSE_CUE) {
       this.dyn.lineStyle(2, C.light, 0.25 + 0.55 * carryExposure);
-      this.dyn.strokeCircle(this.ball.x, this.ball.y, BR + 2 + 4 * carryExposure);
+      this.dyn.strokeCircle(this.wx(this.ball.x, this.ball.y), this.ball.y, BR + 2 + 4 * carryExposure);
     }
     // active player ring
     const ap = this.players[this.activeIdx];
     if (ap) {
       const ds = depthScale(ap.y, this.py, this.ph);
+      const wapx = this.wx(ap.x, ap.y); // warped active-player x (#192)
       this.dyn.lineStyle(3, C.gold, 1);
-      this.dyn.strokeCircle(ap.x, ap.y, (PR + 6) * ds); // selection ring on the ground at the feet
+      this.dyn.strokeCircle(wapx, ap.y, (PR + 6) * ds); // selection ring on the ground at the feet
       // gold chevron floating ABOVE the upright figure's head, pointing down at it
       const headTop = ap.y - 3.55 * PR * ds;
       this.dyn.fillStyle(C.gold, 1);
-      this.dyn.fillTriangle(ap.x - 7 * ds, headTop - 17 * ds, ap.x + 7 * ds, headTop - 17 * ds, ap.x, headTop - 5 * ds);
+      this.dyn.fillTriangle(wapx - 7 * ds, headTop - 17 * ds, wapx + 7 * ds, headTop - 17 * ds, wapx, headTop - 5 * ds);
       this.drawStaminaNub(ap);
     }
     this.updatePlayerLabels(); // number+role nameplates (#190)
@@ -3041,7 +3087,7 @@ export class MatchScene extends Phaser.Scene {
 
     const g = this.bodyGfx;
     g.save();
-    g.translateCanvas(p.x, p.y - hop);
+    g.translateCanvas(this.wx(p.x, p.y), p.y - hop); // sit the figure on the perspective trapezoid (#192)
     g.scaleCanvas(ds, ds);
     if (mirror < 0) g.scaleCanvas(-1, 1); // draw facing right; mirror to face left
     g.scaleCanvas(sq.sy, sq.sx); // accel/decel squash: width = sy (perp), height = sx (along)
