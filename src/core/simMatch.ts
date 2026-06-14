@@ -63,28 +63,47 @@ export function simulateMatch(
     else if (ag > hg) result.winnerId = away.id;
     else {
       const pens = penaltyShootout(home, away, rng);
-      result.penalties = pens;
+      result.penalties = { home: pens.home, away: pens.away }; // persist only the tally (kicks are for the live reveal)
       result.winnerId = pens.home > pens.away ? home.id : away.id;
     }
   }
   return result;
 }
 
+export interface PenKick {
+  side: 'home' | 'away';
+  scored: boolean;
+}
+export interface PenShootout {
+  home: number;
+  away: number;
+  kicks: PenKick[]; // ordered per-kick outcomes for the live reveal (#142)
+}
+
 // Best-of-five then sudden death; conversion odds scale with composure (OVR).
-export function penaltyShootout(home: Team, away: Team, rng: RNG): { home: number; away: number } {
+// Records the ordered per-kick outcomes WITHOUT changing the rng.next() draw
+// order, so the final tally stays bit-identical to before for any seed (#142).
+export function penaltyShootout(home: Team, away: Team, rng: RNG): PenShootout {
   const pH = 0.62 + (home.ovr - 75) * 0.004;
   const pA = 0.62 + (away.ovr - 75) * 0.004;
   let h = 0;
   let a = 0;
+  const kicks: PenKick[] = [];
   for (let i = 0; i < 5; i++) {
-    if (rng.next() < pH) h++;
-    if (rng.next() < pA) a++;
+    const sh = rng.next() < pH;
+    if (sh) h++;
+    kicks.push({ side: 'home', scored: sh });
+    const sa = rng.next() < pA;
+    if (sa) a++;
+    kicks.push({ side: 'away', scored: sa });
   }
   while (h === a) {
-    const sh = rng.next() < pH ? 1 : 0;
-    const sa = rng.next() < pA ? 1 : 0;
-    h += sh;
-    a += sa;
+    const sh = rng.next() < pH;
+    if (sh) h++;
+    kicks.push({ side: 'home', scored: sh });
+    const sa = rng.next() < pA;
+    if (sa) a++;
+    kicks.push({ side: 'away', scored: sa });
   }
-  return { home: h, away: a };
+  return { home: h, away: a, kicks };
 }
