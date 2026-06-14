@@ -48,15 +48,19 @@ export function cameraTarget(
 }
 
 /**
- * Step the camera scroll (the top-left of the view in world space) toward the
- * scroll that centres `targetC` in a `viewW x viewH` window, lerped by `lerp`
- * (0..1) and clamped so the view never leaves `bounds`. When the view is larger
- * than the bounds on an axis it is centred on that axis (no void revealed).
- * Frame-rate-independent enough for a smooth broadcast feel. Writes into `out`.
+ * Step the camera CENTRE (the world point shown at screen centre) toward the
+ * point that frames `targetC`, lerped by `lerp` (0..1) and clamped so the visible
+ * `viewW x viewH` window never leaves `bounds`. Working in CENTRE space (not
+ * scroll space) keeps this independent of Phaser's zoom-dependent scroll origin —
+ * a Phaser camera shows world `scroll + cameraSize/2` at screen centre regardless
+ * of zoom, so the scene converts back with `scroll = centre - cameraSize/2`. When
+ * the view is larger than the bounds on an axis the centre is pinned to the world
+ * centre there (no void revealed). Frame-rate-independent enough for a smooth
+ * broadcast feel. Writes into `out`.
  */
 export function followStep(
-  curScrollX: number,
-  curScrollY: number,
+  curCx: number,
+  curCy: number,
   targetCx: number,
   targetCy: number,
   lerp: number,
@@ -65,31 +69,32 @@ export function followStep(
   bounds: Bounds,
   out: Vec2 = { x: 0, y: 0 },
 ): Vec2 {
-  out.x = axisStep(curScrollX, targetCx, lerp, viewW, bounds.x, bounds.w);
-  out.y = axisStep(curScrollY, targetCy, lerp, viewH, bounds.y, bounds.h);
+  out.x = axisStep(curCx, targetCx, lerp, viewW, bounds.x, bounds.w);
+  out.y = axisStep(curCy, targetCy, lerp, viewH, bounds.y, bounds.h);
   return out;
 }
 
-/** One-axis follow: clamp the centred-target scroll to bounds, then lerp to it. */
-function axisStep(cur: number, targetCentre: number, lerp: number, view: number, min: number, size: number): number {
-  // recover from any non-finite input rather than scrolling the camera to NaN
-  if (!Number.isFinite(cur)) cur = min;
-  if (!Number.isFinite(targetCentre)) targetCentre = min + size / 2;
+/** One-axis follow: clamp the target centre to the in-bounds range, then lerp to it. */
+function axisStep(cur: number, target: number, lerp: number, view: number, min: number, size: number): number {
+  // recover from any non-finite input rather than driving the camera to NaN
+  if (!Number.isFinite(cur)) cur = min + size / 2;
+  if (!Number.isFinite(target)) target = min + size / 2;
 
-  const desired = clampScroll(targetCentre - view / 2, view, min, size);
+  const desired = clampCentre(target, view, min, size);
   const t = lerp < 0 ? 0 : lerp > 1 ? 1 : lerp;
   const next = cur + (desired - cur) * t;
-  // final clamp (defensive: both endpoints are already in range when view < size)
-  return clampScroll(next, view, min, size);
+  // final clamp (defensive: desired is already in range when view < size)
+  return clampCentre(next, view, min, size);
 }
 
-/** Clamp a scroll value so the `view`-wide window stays inside [min, min+size]. */
-function clampScroll(scroll: number, view: number, min: number, size: number): number {
-  if (view >= size) return min - (view - size) / 2; // view bigger than world → centre it
-  const max = min + size - view;
-  if (scroll < min) return min;
-  if (scroll > max) return max;
-  return scroll;
+/** Clamp a centre so the `view`-wide window around it stays inside [min, min+size]. */
+function clampCentre(centre: number, view: number, min: number, size: number): number {
+  if (view >= size) return min + size / 2; // view bigger than world → pin to world centre
+  const lo = min + view / 2;
+  const hi = min + size - view / 2;
+  if (centre < lo) return lo;
+  if (centre > hi) return hi;
+  return centre;
 }
 
 // --- zoom level + snap-zoom punch (#127) -----------------------------------
@@ -154,4 +159,47 @@ export function shakeIntensity(impact01: number, floor = 0.006, cap = 0.016): nu
 export function shakeDuration(impact01: number, floor = 200, cap = 320): number {
   const t = impact01 < 0 ? 0 : impact01 > 1 ? 1 : impact01;
   return floor + (cap - floor) * t;
+}
+
+// --- broadcast depth: parallax + follow steadiness (#125) -------------------
+
+/**
+ * World-space offset to apply to a background layer so it scrolls at `factor` of
+ * the camera — a parallax plane that sells the three-quarter broadcast depth.
+ * Setting the layer's position to this value yields an on-screen travel of
+ * exactly `factor * cameraScroll`: factor 1 → 0 (locked to the world, no
+ * parallax); factor 0 → the full scroll (pinned to the screen, a skybox);
+ * 0<factor<1 → the layer lags the turf on every pan. Pure scalar, no allocation.
+ */
+export function parallaxShift(scroll: number, factor: number): number {
+  if (!Number.isFinite(scroll)) return 0;
+  const f = factor < 0 ? 0 : factor > 1 ? 1 : factor;
+  return scroll * (1 - f);
+}
+
+/**
+ * A velocity-proportional lead (px) that nudges the framing the way the carrier
+ * (or loose ball) is moving, so a run to the near/far touchline is anticipated.
+ * Scaled by `scale` and hard-clamped to ±`cap` so a fast sprint or shot can't
+ * fling the frame. Pass scale 0 (reduce-motion) for no lead. Pure scalar.
+ */
+export function velocityLead(v: number, scale: number, cap: number): number {
+  if (!Number.isFinite(v)) return 0;
+  const lead = v * scale;
+  return lead > cap ? cap : lead < -cap ? -cap : lead;
+}
+
+/**
+ * One-axis deadzone: the part of `delta` (the focus minus the current camera
+ * centre) that lies OUTSIDE a ±`half` band. Within the band it returns 0 — the
+ * frame holds perfectly still, so a jostled / contested ball can't drift the
+ * camera; beyond it returns the overshoot so the focus eases to rest on the
+ * deadzone edge (a small broadcast slack). Pure scalar, no allocation.
+ */
+export function deadzone1d(delta: number, half: number): number {
+  if (!Number.isFinite(delta)) return 0;
+  const h = half > 0 ? half : 0;
+  if (delta > h) return delta - h;
+  if (delta < -h) return delta + h;
+  return 0;
 }

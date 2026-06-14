@@ -175,8 +175,11 @@ export function chooseCelebrant(
 // 1.18] (#131) and the body-lean it can never invert or balloon the silhouette.
 // Pure + allocation-free; a function of y only, so it is static (renders
 // identically under reduceMotion — it is depth readability, not motion juice).
-export const DEPTH_NEAR = 1.12; // at the near (bottom) touchline
-export const DEPTH_FAR = 0.88; // at the far (top) touchline
+// ~15% near↔far swing (GDD §6: "players shrink ~15% toward the far touchline"),
+// symmetric about 1 so the band's midpoint is unscaled. A stronger read than the
+// old ±12% — it sells the three-quarter broadcast angle without a z-axis.
+export const DEPTH_NEAR = 1.15; // at the near (bottom) touchline
+export const DEPTH_FAR = 0.85; // at the far (top) touchline
 
 export function depthScale(y: number, py: number, ph: number): number {
   if (!Number.isFinite(y) || !Number.isFinite(py) || !Number.isFinite(ph) || ph <= 0) return 1;

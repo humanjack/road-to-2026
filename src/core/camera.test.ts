@@ -7,6 +7,9 @@ import {
   zoomPunchStep,
   shakeIntensity,
   shakeDuration,
+  parallaxShift,
+  velocityLead,
+  deadzone1d,
   type Vec2,
   type Bounds,
 } from './camera';
@@ -44,68 +47,72 @@ describe('cameraTarget', () => {
   });
 });
 
-describe('followStep', () => {
+describe('followStep (centre space)', () => {
+  // followStep now returns the camera CENTRE (world point at screen centre); the
+  // scene converts to a Phaser scroll with `scroll = centre - cameraSize/2`.
   const viewW = 800;
   const viewH = 450;
+  // for BOUNDS (1280x720): centre x ∈ [400, 880], centre y ∈ [225, 495]
 
-  it('moves the scroll toward (but not past) the centred target by the lerp fraction', () => {
-    // target centre 640 -> desired scrollX = 640 - 400 = 240; from 0 at lerp 0.5 -> 120
-    const r = followStep(0, 0, 640, 360, 0.5, viewW, viewH, BOUNDS);
-    expect(r.x).toBeCloseTo(120, 5);
-    expect(r.y).toBeCloseTo((360 - viewH / 2) * 0.5, 5);
+  it('moves the centre toward the target by the lerp fraction', () => {
+    // target 640 (in range); from 400 at lerp 0.5 -> 520
+    const r = followStep(400, 225, 640, 360, 0.5, viewW, viewH, BOUNDS);
+    expect(r.x).toBeCloseTo(520, 5); // 400 + (640-400)*0.5
+    expect(r.y).toBeCloseTo(292.5, 5); // 225 + (360-225)*0.5
   });
 
-  it('lerp = 0 holds the current scroll (steady reduce-motion framing)', () => {
-    const r = followStep(173, 88, 640, 360, 0, viewW, viewH, BOUNDS);
-    expect(r.x).toBe(173);
-    expect(r.y).toBe(88);
+  it('lerp = 0 holds the current centre (steady reduce-motion framing)', () => {
+    const r = followStep(500, 300, 640, 360, 0, viewW, viewH, BOUNDS);
+    expect(r.x).toBe(500);
+    expect(r.y).toBe(300);
   });
 
-  it('lerp = 1 snaps exactly onto the clamped desired scroll', () => {
-    const r = followStep(0, 0, 640, 360, 1, viewW, viewH, BOUNDS);
-    expect(r.x).toBeCloseTo(240, 5);
-    expect(r.y).toBeCloseTo(135, 5);
+  it('lerp = 1 snaps exactly onto the clamped target centre', () => {
+    const r = followStep(400, 225, 640, 360, 1, viewW, viewH, BOUNDS);
+    expect(r.x).toBeCloseTo(640, 5);
+    expect(r.y).toBeCloseTo(360, 5);
   });
 
-  it('clamps to the left/top edge — never reveals void beyond the world', () => {
-    const r = followStep(0, 0, 0, 0, 1, viewW, viewH, BOUNDS);
-    expect(r.x).toBe(0);
-    expect(r.y).toBe(0);
+  it('clamps the centre at the left/top edge — never reveals void beyond the world', () => {
+    // a target at the world origin pulls the centre only to the half-view minimum
+    const r = followStep(400, 225, 0, 0, 1, viewW, viewH, BOUNDS);
+    expect(r.x).toBe(viewW / 2); // 400 — the view's left edge rests on bounds.x
+    expect(r.y).toBe(viewH / 2); // 225
   });
 
-  it('clamps to the right/bottom edge', () => {
-    const r = followStep(0, 0, 5000, 5000, 1, viewW, viewH, BOUNDS);
-    expect(r.x).toBe(BOUNDS.w - viewW); // 480
-    expect(r.y).toBe(BOUNDS.h - viewH); // 270
+  it('clamps the centre at the right/bottom edge', () => {
+    const r = followStep(640, 360, 5000, 5000, 1, viewW, viewH, BOUNDS);
+    expect(r.x).toBe(BOUNDS.w - viewW / 2); // 880
+    expect(r.y).toBe(BOUNDS.h - viewH / 2); // 495
   });
 
   it('approaches monotonically and never overshoots over repeated steps', () => {
-    let x = 0;
-    const targetScroll = 640 - viewW / 2; // 240
+    let x = viewW / 2; // start parked at the left clamp
+    const target = 640;
     let prev = -1;
     for (let i = 0; i < 200; i++) {
-      const r = followStep(x, 0, 640, 360, 0.12, viewW, viewH, BOUNDS);
+      const r = followStep(x, 360, target, 360, 0.12, viewW, viewH, BOUNDS);
       x = r.x;
       expect(x).toBeGreaterThanOrEqual(prev); // monotonic toward target
-      expect(x).toBeLessThanOrEqual(targetScroll + 1e-6); // never overshoots
+      expect(x).toBeLessThanOrEqual(target + 1e-6); // never overshoots
       prev = x;
     }
-    expect(x).toBeCloseTo(targetScroll, 3); // converges
+    expect(x).toBeCloseTo(target, 3); // converges
   });
 
-  it('centres an axis when the view is larger than the world (no scroll jitter)', () => {
-    const wide: Bounds = { x: 0, y: 0, w: 600, h: 720 };
-    const r = followStep(0, 0, 300, 360, 1, viewW, viewH, wide);
-    expect(r.x).toBe((600 - viewW) / 2); // -100: world centred in the view
+  it('centres an axis when the view is larger than the world (no jitter)', () => {
+    const narrow: Bounds = { x: 0, y: 0, w: 600, h: 720 };
+    const r = followStep(300, 360, 100, 360, 1, viewW, viewH, narrow);
+    expect(r.x).toBe(300); // world centre (0 + 600/2), regardless of the target
   });
 
   it('writes into the supplied scratch object (no allocation)', () => {
     const out: Vec2 = { x: 0, y: 0 };
-    const r = followStep(0, 0, 640, 360, 0.12, viewW, viewH, BOUNDS, out);
+    const r = followStep(400, 225, 640, 360, 0.12, viewW, viewH, BOUNDS, out);
     expect(r).toBe(out);
   });
 
-  it('recovers from a non-finite current scroll instead of propagating NaN', () => {
+  it('recovers from a non-finite current centre instead of propagating NaN', () => {
     const r = followStep(NaN, NaN, 640, 360, 0.5, viewW, viewH, BOUNDS);
     expect(Number.isFinite(r.x)).toBe(true);
     expect(Number.isFinite(r.y)).toBe(true);
@@ -211,5 +218,84 @@ describe('shake curve (#139)', () => {
     expect(shakeDuration(0)).toBe(200);
     expect(shakeDuration(1)).toBe(320);
     expect(shakeDuration(0.5)).toBeGreaterThan(shakeDuration(0));
+  });
+});
+
+describe('parallaxShift (#125 broadcast depth)', () => {
+  it('factor 1 locks the layer to the world (no parallax)', () => {
+    expect(parallaxShift(500, 1)).toBeCloseTo(0, 10);
+    expect(parallaxShift(-320, 1)).toBeCloseTo(0, 10); // -0 is fine; it's mathematically zero
+  });
+
+  it('factor 0 pins the layer to the screen (offset == full scroll)', () => {
+    expect(parallaxShift(500, 0)).toBe(500);
+  });
+
+  it('a mid factor lags the turf — on-screen travel is factor*scroll', () => {
+    // layer position = scroll*(1-f); on-screen travel = scroll - position = scroll*f
+    const scroll = 600;
+    const f = 0.6;
+    const pos = parallaxShift(scroll, f);
+    expect(pos).toBeCloseTo(240, 6); // 600 * 0.4
+    expect(scroll - pos).toBeCloseTo(scroll * f, 6); // travels at 60% of the turf
+  });
+
+  it('is linear in scroll and monotonic in factor', () => {
+    expect(parallaxShift(0, 0.5)).toBe(0);
+    expect(parallaxShift(200, 0.5)).toBeCloseTo(100, 6);
+    expect(parallaxShift(400, 0.5)).toBeCloseTo(200, 6);
+    // a smaller factor (more distant) ⇒ a larger world offset (lags more)
+    expect(parallaxShift(400, 0.3)).toBeGreaterThan(parallaxShift(400, 0.7));
+  });
+
+  it('clamps the factor into [0,1] and survives a non-finite scroll', () => {
+    expect(parallaxShift(400, -1)).toBe(400); // clamped to 0 → full pin
+    expect(parallaxShift(400, 2)).toBe(0); // clamped to 1 → locked
+    expect(parallaxShift(NaN, 0.5)).toBe(0);
+  });
+});
+
+describe('velocityLead (#125 vertical lead)', () => {
+  it('leads proportionally to velocity in its direction', () => {
+    expect(velocityLead(200, 0.22, 70)).toBeCloseTo(44, 6);
+    expect(velocityLead(-200, 0.22, 70)).toBeCloseTo(-44, 6);
+  });
+
+  it('hard-clamps to ±cap so a fast shot/sprint cannot fling the frame', () => {
+    expect(velocityLead(5000, 0.22, 70)).toBe(70);
+    expect(velocityLead(-5000, 0.22, 70)).toBe(-70);
+  });
+
+  it('a zero scale (reduce-motion) yields no lead', () => {
+    expect(velocityLead(300, 0, 70)).toBe(0);
+  });
+
+  it('survives a non-finite velocity', () => {
+    expect(velocityLead(NaN, 0.22, 70)).toBe(0);
+  });
+});
+
+describe('deadzone1d (#125 anti-jitter)', () => {
+  it('holds the frame still while the focus stays within the band', () => {
+    expect(deadzone1d(0, 26)).toBe(0);
+    expect(deadzone1d(20, 26)).toBe(0);
+    expect(deadzone1d(-26, 26)).toBe(0);
+  });
+
+  it('returns only the overshoot beyond the band (focus rests on the edge)', () => {
+    expect(deadzone1d(40, 26)).toBeCloseTo(14, 6);
+    expect(deadzone1d(-40, 26)).toBeCloseTo(-14, 6);
+  });
+
+  it('is continuous at the band edge (no jump as the focus crosses out)', () => {
+    expect(deadzone1d(26.0001, 26)).toBeCloseTo(0.0001, 6);
+  });
+
+  it('a zero half-band passes the delta straight through', () => {
+    expect(deadzone1d(33, 0)).toBe(33);
+  });
+
+  it('survives a non-finite delta', () => {
+    expect(deadzone1d(NaN, 26)).toBe(0);
   });
 });
