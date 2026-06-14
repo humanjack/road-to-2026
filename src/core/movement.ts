@@ -49,6 +49,7 @@ export function approachVelocity(
   accel: number,
   decel: number,
   dt: number,
+  out: Vec2 = { x: 0, y: 0 }, // pass a reusable scratch to avoid a per-call allocation
 ): Vec2 {
   // Defensive: recover from any non-finite input rather than propagating NaN
   // (a single bad value would poison every downstream position).
@@ -57,7 +58,9 @@ export function approachVelocity(
     vy = 0;
   }
   if (!Number.isFinite(desVx) || !Number.isFinite(desVy) || !(dt > 0)) {
-    return { x: vx, y: vy };
+    out.x = vx;
+    out.y = vy;
+    return out;
   }
 
   const curSpeed = Math.hypot(vx, vy);
@@ -80,9 +83,13 @@ export function approachVelocity(
 
   // settle to a dead stop when there's no desired motion and we're crawling
   if (desSpeed === 0 && Math.hypot(vx, vy) < REST_EPSILON) {
-    return { x: 0, y: 0 };
+    out.x = 0;
+    out.y = 0;
+    return out;
   }
-  return { x: vx, y: vy };
+  out.x = vx;
+  out.y = vy;
+  return out;
 }
 
 // --- sprint & stamina ------------------------------------------------------
