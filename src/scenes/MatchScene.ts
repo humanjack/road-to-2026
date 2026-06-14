@@ -71,6 +71,7 @@ import {
   zoomPunchStep,
   shakeIntensity,
   shakeDuration,
+  shakeZoomScale,
   parallaxShift,
   velocityLead,
   deadzone1d,
@@ -2435,7 +2436,12 @@ export class MatchScene extends Phaser.Scene {
     if (this.reduceMotion) return;
     if (!priority && this.shakeCd > 0) return;
     this.shakeCd = SHAKE_REFRACTORY;
-    this.cameras.main.shake(dur, intensity, priority); // force-restart only for the priority (goal) shake
+    // Zoom-adaptive (#182): Phaser applies the shake offset after the zoom, so a
+    // fixed intensity throws ≈ zoom× further on-screen the more we're zoomed in.
+    // Scaling by refZoom/zoom holds the on-screen amplitude constant across all
+    // views — every view feels like the tuned-acceptable full-pitch shake.
+    const adapted = intensity * shakeZoomScale(this.cameras.main.zoom);
+    this.cameras.main.shake(dur, adapted, priority); // force-restart only for the priority (goal) shake
   }
 
   private flash(dur: number, r: number, g: number, b: number): void {

@@ -7,6 +7,7 @@ import {
   zoomPunchStep,
   shakeIntensity,
   shakeDuration,
+  shakeZoomScale,
   parallaxShift,
   velocityLead,
   deadzone1d,
@@ -234,6 +235,56 @@ describe('shake curve (#139, retuned for the intentional-shake budget)', () => {
     expect(shakeDuration(0)).toBe(180);
     expect(shakeDuration(1)).toBe(260);
     expect(shakeDuration(0.5)).toBeGreaterThan(shakeDuration(0));
+  });
+});
+
+describe('shakeZoomScale (#182 zoom-adaptive shake)', () => {
+  it('is identity at the reference zoom (full-pitch feel preserved)', () => {
+    expect(shakeZoomScale(1, 1)).toBeCloseTo(1, 10);
+    expect(shakeZoomScale(2, 2)).toBeCloseTo(1, 10);
+  });
+
+  it('attenuates as zoom increases, cancelling Phaser post-zoom amplification', () => {
+    // on-screen px ≈ zoom × W × (intensity × scale); with scale = ref/zoom it is
+    // constant (= ref × W × intensity) regardless of zoom.
+    expect(shakeZoomScale(2.0)).toBeCloseTo(0.5, 10); // broadcast
+    expect(shakeZoomScale(2.4)).toBeCloseTo(1 / 2.4, 10); // action cam
+    const W = 1280;
+    const intensity = 0.011;
+    const screenPx = (z: number) => z * W * (intensity * shakeZoomScale(z));
+    expect(screenPx(1.0)).toBeCloseTo(screenPx(2.0), 6);
+    expect(screenPx(1.0)).toBeCloseTo(screenPx(2.4), 6);
+    expect(screenPx(1.0)).toBeCloseTo(screenPx(0.55), 6); // refit full-pitch (larger pitch)
+  });
+
+  it('boosts a zoomed-out coach-cam so shake does not vanish', () => {
+    expect(shakeZoomScale(0.5)).toBeCloseTo(2, 10);
+  });
+
+  it('is monotonic decreasing in zoom', () => {
+    let prev = Infinity;
+    for (let z = 0.5; z <= 3; z += 0.25) {
+      const v = shakeZoomScale(z);
+      expect(v).toBeLessThan(prev);
+      prev = v;
+    }
+  });
+
+  it('clamps the boost so a pathological near-zero zoom cannot explode the amplitude', () => {
+    expect(shakeZoomScale(0.01)).toBe(4);
+    expect(shakeZoomScale(0.0001)).toBe(4);
+  });
+
+  it('falls back to 1 on non-finite / non-positive input', () => {
+    expect(shakeZoomScale(0)).toBe(1);
+    expect(shakeZoomScale(-2)).toBe(1);
+    expect(shakeZoomScale(NaN)).toBe(1);
+    expect(shakeZoomScale(2, 0)).toBe(1);
+    expect(shakeZoomScale(2, NaN)).toBe(1);
+  });
+
+  it('honours a non-default reference zoom', () => {
+    expect(shakeZoomScale(4, 2)).toBeCloseTo(0.5, 10);
   });
 });
 
