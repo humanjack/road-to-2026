@@ -46,7 +46,16 @@ describe('save', () => {
     expect(d.version).toBe(1);
     expect(d.tournament).toBeNull();
     expect(d.coins).toBe(0);
-    expect(d.settings).toEqual({ fictionalNations: false, sfx: true, music: true, reduceMotion: false, muted: false });
+    expect(d.settings).toEqual({
+      fictionalNations: false,
+      sfx: true,
+      music: true,
+      reduceMotion: false,
+      muted: false,
+      sprintMode: 'hold',
+      passAssist: 'full',
+      defensiveSwitch: 'auto',
+    });
     expect(d.unlocks).toEqual([]);
     expect(d.cosmetics).toEqual({ ball: 'default', pitch: 'default' });
   });
@@ -116,6 +125,22 @@ describe('save', () => {
       expect(set.sfx).toBe(false);
       expect(set.music).toBe(true); // default preserved
       expect(set.fictionalNations).toBe(false);
+      // new control settings default for an old save that predates them
+      expect(set.sprintMode).toBe('hold');
+      expect(set.passAssist).toBe('full');
+      expect(set.defensiveSwitch).toBe('auto');
+    });
+
+    it('round-trips control settings written by the settings screen', async () => {
+      store.set(
+        KEY,
+        JSON.stringify({ version: 1, settings: { sprintMode: 'toggle', passAssist: 'semi', defensiveSwitch: 'manual' } }),
+      );
+      const s = await freshSave();
+      const set = s.getSave().settings;
+      expect(set.sprintMode).toBe('toggle');
+      expect(set.passAssist).toBe('semi');
+      expect(set.defensiveSwitch).toBe('manual');
     });
 
     it('drops a structurally invalid tournament', async () => {

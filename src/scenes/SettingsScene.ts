@@ -15,23 +15,48 @@ export class SettingsScene extends Phaser.Scene {
     fadeInScene(this);
 
     this.add
-      .text(GAME_W / 2, 70, 'SETTINGS', { fontFamily: FONT_DISPLAY, fontSize: '40px', color: CSS.light })
+      .text(GAME_W / 2, 56, 'SETTINGS', { fontFamily: FONT_DISPLAY, fontSize: '40px', color: CSS.light })
       .setOrigin(0.5);
 
     const s = getSave().settings;
-    let y = 150;
-    this.toggle('SOUND EFFECTS', 'sfx', s.sfx, y);
-    y += 64;
-    this.toggle('MUSIC', 'music', s.music, y);
-    y += 64;
-    this.toggle('MUTE ALL AUDIO', 'muted', s.muted, y);
-    y += 64;
-    this.toggle('REDUCE MOTION', 'reduceMotion', s.reduceMotion, y);
-    y += 64;
-    this.toggle('FICTIONALIZED NATIONS', 'fictionalNations', s.fictionalNations, y);
+
+    // --- left column: audio & display ---
+    const lLabel = 120;
+    const lCtrl = GAME_W / 2 - 150;
+    this.section('AUDIO & DISPLAY', lLabel, 116);
+    let y = 158;
+    this.toggle('SOUND EFFECTS', 'sfx', s.sfx, lLabel, y, lCtrl);
+    y += 62;
+    this.toggle('MUSIC', 'music', s.music, lLabel, y, lCtrl);
+    y += 62;
+    this.toggle('MUTE ALL AUDIO', 'muted', s.muted, lLabel, y, lCtrl);
+    y += 62;
+    this.toggle('REDUCE MOTION', 'reduceMotion', s.reduceMotion, lLabel, y, lCtrl);
+    y += 62;
+    this.toggle('FICTIONALIZED NATIONS', 'fictionalNations', s.fictionalNations, lLabel, y, lCtrl);
+
+    // --- right column: controls (accessibility / veteran depth) ---
+    const rLabel = GAME_W / 2 + 120;
+    const rCtrl = GAME_W - 200;
+    this.section('CONTROLS', rLabel, 116);
+    let ry = 158;
+    this.cycle('SPRINT', 'sprintMode', ['hold', 'toggle'], s.sprintMode, rLabel, ry, rCtrl);
+    ry += 62;
+    this.cycle('PASS ASSIST', 'passAssist', ['full', 'semi', 'manual'], s.passAssist, rLabel, ry, rCtrl);
+    ry += 62;
+    this.cycle('DEF. SWITCHING', 'defensiveSwitch', ['auto', 'manual'], s.defensiveSwitch, rLabel, ry, rCtrl);
+    // a compact in-match controls reference
+    this.add
+      .text(rLabel, ry + 54, 'IN MATCH:  Move WASD · Shoot hold Space · Pass J\nThrough L · Tackle I (hold = slide) · Switch K · Mute M', {
+        fontFamily: FONT_BODY,
+        fontSize: '13px',
+        color: CSS.mid,
+        lineSpacing: 4,
+      })
+      .setOrigin(0, 0);
 
     // Legal disclaimer block
-    const discY = 470;
+    const discY = 488;
     const g = this.add.graphics();
     g.fillStyle(C.deep, 0.85);
     g.fillRoundedRect(GAME_W / 2 - 460, discY, 920, 120, 12);
@@ -58,34 +83,60 @@ export class SettingsScene extends Phaser.Scene {
     this.button(GAME_W / 2 + 170, GAME_H - 60, 'BACK', C.surge, () => transitionTo(this, 'Menu'));
   }
 
-  private toggle(label: string, key: keyof GameSettings, value: boolean, y: number): void {
-    const cx = GAME_W / 2;
-    this.add
-      .text(cx - 300, y, label, { fontFamily: FONT_DISPLAY, fontSize: '22px', color: CSS.light })
-      .setOrigin(0, 0.5);
+  private section(label: string, x: number, y: number): void {
+    this.add.text(x, y, label, { fontFamily: FONT_DISPLAY, fontSize: '16px', color: CSS.gold }).setOrigin(0, 0.5).setLetterSpacing(2);
+  }
 
-    const w = 120;
-    const h = 44;
-    const x = cx + 240;
+  private toggle(label: string, key: keyof GameSettings, value: boolean, labelX: number, y: number, ctrlX: number): void {
+    this.add.text(labelX, y, label, { fontFamily: FONT_DISPLAY, fontSize: '18px', color: CSS.light }).setOrigin(0, 0.5);
+    const w = 96;
+    const h = 38;
     const g = this.add.graphics();
-    const txt = this.add.text(x, y, '', { fontFamily: FONT_DISPLAY, fontSize: '20px', color: CSS.white }).setOrigin(0.5);
+    const txt = this.add.text(ctrlX, y, '', { fontFamily: FONT_DISPLAY, fontSize: '17px', color: CSS.white }).setOrigin(0.5);
     let on = value;
     const draw = () => {
       g.clear();
       g.fillStyle(on ? C.lime : C.dark, 1);
-      g.fillRoundedRect(x - w / 2, y - h / 2, w, h, 22);
+      g.fillRoundedRect(ctrlX - w / 2, y - h / 2, w, h, 19);
       g.lineStyle(2, C.mid, 0.6);
-      g.strokeRoundedRect(x - w / 2, y - h / 2, w, h, 22);
+      g.strokeRoundedRect(ctrlX - w / 2, y - h / 2, w, h, 19);
       txt.setText(on ? 'ON' : 'OFF').setColor(on ? CSS.deep : CSS.mid);
     };
     draw();
-    const zone = this.add.zone(x, y, w, h).setInteractive({ useHandCursor: true });
+    const zone = this.add.zone(ctrlX, y, w, h).setInteractive({ useHandCursor: true });
     zone.on('pointerdown', () => {
       audio.resume();
       on = !on;
       draw();
       updateSettings({ [key]: on } as Partial<GameSettings>);
       audio.syncSettings();
+      audio.play('ui');
+    });
+  }
+
+  // A cycle control: tapping advances through `options`, persisting the choice.
+  private cycle(label: string, key: keyof GameSettings, options: string[], current: string, labelX: number, y: number, ctrlX: number): void {
+    this.add.text(labelX, y, label, { fontFamily: FONT_DISPLAY, fontSize: '18px', color: CSS.light }).setOrigin(0, 0.5);
+    const w = 130;
+    const h = 38;
+    const g = this.add.graphics();
+    const txt = this.add.text(ctrlX, y, '', { fontFamily: FONT_DISPLAY, fontSize: '16px', color: CSS.light }).setOrigin(0.5);
+    let idx = Math.max(0, options.indexOf(current));
+    const draw = () => {
+      g.clear();
+      g.fillStyle(C.deep, 1);
+      g.fillRoundedRect(ctrlX - w / 2, y - h / 2, w, h, 10);
+      g.lineStyle(2, C.cyan, 0.7);
+      g.strokeRoundedRect(ctrlX - w / 2, y - h / 2, w, h, 10);
+      txt.setText(`‹ ${options[idx].toUpperCase()} ›`);
+    };
+    draw();
+    const zone = this.add.zone(ctrlX, y, w, h).setInteractive({ useHandCursor: true });
+    zone.on('pointerdown', () => {
+      audio.resume();
+      idx = (idx + 1) % options.length;
+      draw();
+      updateSettings({ [key]: options[idx] } as Partial<GameSettings>);
       audio.play('ui');
     });
   }

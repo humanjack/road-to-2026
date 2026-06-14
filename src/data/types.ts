@@ -126,12 +126,20 @@ export interface Cosmetics {
   pitch: string; // 'default' | 'aurora'
 }
 
+export type SprintMode = 'hold' | 'toggle';
+export type PassAssist = 'full' | 'semi' | 'manual';
+export type DefensiveSwitch = 'auto' | 'manual';
+
 export interface GameSettings {
   fictionalNations: boolean;
   sfx: boolean;
   music: boolean;
   reduceMotion: boolean; // accessibility: disables screen shake / flashes
   muted: boolean; // master mute — silences ALL audio (sfx + music) regardless of the above
+  // --- controls (defaults reproduce the original arcade feel) ---
+  sprintMode: SprintMode; // hold SHIFT, or tap to toggle sprint on/off
+  passAssist: PassAssist; // pass-cone width: full (casual) / semi / manual (near pure aim)
+  defensiveSwitch: DefensiveSwitch; // auto-switch to the nearest defender, or manual only
 }
 
 export interface CareerStats {

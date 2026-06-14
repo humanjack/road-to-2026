@@ -185,6 +185,11 @@ export class MatchScene extends Phaser.Scene {
   private vignette!: Phaser.GameObjects.Graphics;
   private ballTrail: { x: number; y: number }[] = [];
   private reduceMotion = false;
+  // control settings (read once at create; defaults reproduce the original feel)
+  private sprintToggleMode = false; // tap-to-toggle sprint vs hold
+  private sprintToggled = false; // current toggled-sprint state
+  private passCone = PASS_CONE.full; // assist-cone width from the pass-assist setting
+  private autoSwitch = true; // auto-switch to the nearest defender on defence
   private ballTint = 0xffffff;
   private finished = false;
 
@@ -227,7 +232,13 @@ export class MatchScene extends Phaser.Scene {
     this.drawPitch();
     this.buildHud();
     this.spawnPlayers();
-    this.reduceMotion = getSave().settings.reduceMotion;
+    const settings = getSave().settings;
+    this.reduceMotion = settings.reduceMotion;
+    this.sprintToggleMode = settings.sprintMode === 'toggle';
+    this.sprintToggled = false;
+    this.passCone =
+      settings.passAssist === 'manual' ? PASS_CONE.manual : settings.passAssist === 'semi' ? PASS_CONE.semi : PASS_CONE.full;
+    this.autoSwitch = settings.defensiveSwitch !== 'manual';
     this.ballTrail = [];
     this.trailGfx = this.add.graphics().setDepth(14);
     this.shadowGfx = this.add.graphics().setDepth(9);
@@ -503,6 +514,10 @@ export class MatchScene extends Phaser.Scene {
       if (!this.doThroughBall()) this.bufferInput('through'); // lead a runner into space
     });
     this.keys.K.on('down', () => this.manualSwitch());
+    // Sprint toggle mode: tapping SHIFT flips sprint on/off (vs hold-to-sprint).
+    this.keys.SHIFT.on('down', () => {
+      if (this.sprintToggleMode) this.sprintToggled = !this.sprintToggled;
+    });
     // Tackle (I): tap = standing poke (short reach, no risk); hold past
     // SLIDE_HOLD_MS = committed slide (longer lunge, but a whiff grounds you).
     this.keys.I.on('down', () => {
@@ -694,6 +709,8 @@ export class MatchScene extends Phaser.Scene {
       this.setActive(owner);
       return;
     }
+    // manual defensive switching: keep control of the player you have (switch via K)
+    if (!this.autoSwitch) return;
     // otherwise nearest home outfielder
     let best = this.activeIdx;
     let bestD = Infinity;
@@ -849,7 +866,8 @@ export class MatchScene extends Phaser.Scene {
     // Sprint is a stamina-gated burst. You can sprint this frame only if you
     // want to, you're moving, and you're not in the post-exhaustion lock; the
     // pool then drains while sprinting and recovers otherwise.
-    const wantSprint = this.keys.SHIFT.isDown && moving;
+    const sprintHeld = this.sprintToggleMode ? this.sprintToggled : this.keys.SHIFT.isDown;
+    const wantSprint = sprintHeld && moving;
     const sprinting = wantSprint && !p.sprintLock && p.stamina > 0;
     const st = stepStamina(p.stamina, sprinting, p.sprintLock, dt);
     p.stamina = st.stamina;
@@ -935,7 +953,7 @@ export class MatchScene extends Phaser.Scene {
     if (!mates.length) return false;
     // assist: pick the mate inside the aim cone (aim = facing). Falls back to
     // the most-advanced mate so a press is never wasted.
-    let sel = choosePassTarget(p.x, p.y, p.faceX, p.faceY, mates, PASS_CONE.full, 1);
+    let sel = choosePassTarget(p.x, p.y, p.faceX, p.faceY, mates, this.passCone, 1);
     if (sel < 0) {
       let best = -1;
       let bestScore = -Infinity;
