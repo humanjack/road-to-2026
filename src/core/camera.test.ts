@@ -8,6 +8,7 @@ import {
   shakeIntensity,
   shakeDuration,
   shakeZoomScale,
+  pitchWarpX,
   parallaxShift,
   velocityLead,
   deadzone1d,
@@ -287,6 +288,50 @@ describe('shakeZoomScale (#182 zoom-adaptive shake)', () => {
 
   it('honours a non-default reference zoom', () => {
     expect(shakeZoomScale(4, 2)).toBeCloseTo(0.5, 10);
+  });
+});
+
+describe('pitchWarpX (#192 broadcast-perspective trapezoid)', () => {
+  // a pitch like the live one: x∈[112, 2288], y∈[112, 1328]
+  const px = 112, py = 112, pw = 2176, ph = 1216;
+  const cx = px + pw / 2; // 1200
+  const warp = (x: number, y: number) => pitchWarpX(x, y, px, py, pw, ph, 0.78, 1.0);
+
+  it('leaves the centre-line unchanged at every depth', () => {
+    expect(warp(cx, py)).toBeCloseTo(cx, 6); // far
+    expect(warp(cx, py + ph / 2)).toBeCloseTo(cx, 6); // mid
+    expect(warp(cx, py + ph)).toBeCloseTo(cx, 6); // near
+  });
+
+  it('is identity at the near touchline (kNear = 1)', () => {
+    expect(warp(px, py + ph)).toBeCloseTo(px, 6);
+    expect(warp(px + pw, py + ph)).toBeCloseTo(px + pw, 6);
+  });
+
+  it('squeezes the far touchline toward the centre by kFar', () => {
+    expect(warp(px, py)).toBeCloseTo(cx + (px - cx) * 0.78, 6); // far-left pulled in
+    expect(warp(px + pw, py)).toBeCloseTo(cx + (px + pw - cx) * 0.78, 6); // far-right pulled in
+    // the far edge is narrower than the near edge
+    const farWidth = warp(px + pw, py) - warp(px, py);
+    const nearWidth = warp(px + pw, py + ph) - warp(px, py + ph);
+    expect(farWidth).toBeLessThan(nearWidth);
+    expect(farWidth / nearWidth).toBeCloseTo(0.78, 6);
+  });
+
+  it('monotonically widens from far to near for a fixed touchline x', () => {
+    let prev = -Infinity;
+    for (let y = py; y <= py + ph; y += ph / 8) {
+      const w = warp(px + pw, y) - cx; // half-width on the right at this depth
+      expect(w).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = w;
+    }
+  });
+
+  it('clamps off-pitch y and is finite-safe', () => {
+    expect(warp(px, py - 500)).toBeCloseTo(warp(px, py), 6); // above far → clamped to far
+    expect(warp(px, py + ph + 500)).toBeCloseTo(warp(px, py + ph), 6); // below near → clamped to near
+    expect(pitchWarpX(NaN, py, px, py, pw, ph)).toBeNaN();
+    expect(pitchWarpX(px, py, px, py, pw, 0)).toBe(px); // degenerate ph → identity
   });
 });
 

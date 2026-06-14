@@ -184,7 +184,7 @@ describe('depthScale (#128 scale-for-depth)', () => {
     for (const y of [py, py + ph / 2, py + ph]) {
       const f = depthScale(y, py, ph);
       expect(f * 0.85).toBeGreaterThan(0); // never negative/zero (no inversion)
-      expect(f * 1.18).toBeLessThan(1.4); // bounded combined scale
+      expect(f * 1.18).toBeLessThan(1.45); // bounded combined scale (depth band ±20% #192)
     }
   });
 
