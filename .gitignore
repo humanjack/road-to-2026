@@ -5,6 +5,9 @@ dist
 .vite
 coverage
 
+# Makefile runtime state (pid + log)
+.run/
+
 # QA / test artifacts
 slice*.png
 .playwright-mcp/
