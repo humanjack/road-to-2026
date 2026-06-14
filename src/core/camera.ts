@@ -267,20 +267,27 @@ export function tacticalBounds(
   return out;
 }
 
-// --- screen-shake curve (#139) ---------------------------------------------
+// --- screen-shake curve (#139, retuned #shake-polish) -----------------------
+//
+// Shake is RESERVED for the rare, intentional moments (a goal, a screamer, the
+// woodwork) — the frequent scrappy events (tackles, loose balls, bumps) no
+// longer shake at all, they read through hit-stop + sfx instead. So the curve
+// here only ever drives a goal/firework, and the floor/cap were pulled down from
+// the old 0.006/0.016 to a gentler 0.004/0.011: even a max-power screamer-goal
+// stays a firm nudge, not a jarring rattle, and the pitch/HUD never blur.
 
 /**
  * Camera-shake intensity for a 0..1 impact, from a celebratory floor up to a hard
  * readability cap — even a max-power hit must keep the pitch/HUD trackable.
  * Monotonic; clamps the impact into [0,1]. Pure scalar (no allocation).
  */
-export function shakeIntensity(impact01: number, floor = 0.006, cap = 0.016): number {
+export function shakeIntensity(impact01: number, floor = 0.004, cap = 0.011): number {
   const t = impact01 < 0 ? 0 : impact01 > 1 ? 1 : impact01;
   return floor + (cap - floor) * t;
 }
 
 /** Camera-shake duration (ms) for a 0..1 impact: a longer rattle for a bigger hit. */
-export function shakeDuration(impact01: number, floor = 200, cap = 320): number {
+export function shakeDuration(impact01: number, floor = 180, cap = 260): number {
   const t = impact01 < 0 ? 0 : impact01 > 1 ? 1 : impact01;
   return floor + (cap - floor) * t;
 }

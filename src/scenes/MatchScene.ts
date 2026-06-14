@@ -165,7 +165,13 @@ const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-b
 const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack direction
 const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
-const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
+const ZOOM_PUNCH = 1.15; // snap-zoom on a firework moment — goal / screamer (#127; trimmed from 1.18 #shake-polish)
+const ZOOM_PUNCH_LIGHT = 1.07; // gentler snap for the frequent clean-steal tell (no shake there anymore)
+// Shake budget (#shake-polish): a global refractory window so impacts can never
+// chain into a continuous rattle. The frequent scrappy events (tackles / loose
+// balls / bumps) no longer shake at all; what remains (goal / screamer / curler /
+// woodwork) is rare, and a goal bypasses the window so it always lands.
+const SHAKE_REFRACTORY = 0.26; // sec a new (non-priority) shake is suppressed after one fires
 // broadcast depth + follow steadiness (#172): a parallax stadium backdrop, a
 // small vertical lead that anticipates near/far runs, and a deadzone so a jostled
 // ball can't jitter the frame. All render-side (functions of sim output / scroll).
@@ -707,7 +713,7 @@ export class MatchScene extends Phaser.Scene {
   private onPostHit(attackSide: Side): void {
     this.lastKickIdx = -1; // anyone can chase the rebound
     this.kickCooldown = 0.08;
-    this.shake(90, 0.008);
+    this.shake(90, 0.006); // woodwork is an intentional moment — keep a tick, trimmed (#shake-polish)
     audio.playImpact('post', shotPower01(Math.hypot(this.ball.vx, this.ball.vy)));
     this.showBanner('OFF THE POST!', C.gold, 600);
     // near-miss Surge reward (GDD §2.7) for the attacking side
@@ -1052,9 +1058,8 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vx = 0;
       this.ball.vy = 0;
       audio.play('tackle'); // physical thwock of a won challenge
-      this.requestTimeFx('tackle'); // brief hit-stop on the clean steal
-      this.requestZoomPunch(); // camera punch on the clean steal (#127)
-      this.shake(110, 0.009); // short crisp jolt on the clean steal (#139)
+      this.requestTimeFx('tackle'); // brief hit-stop on the clean steal — this carries the impact now
+      this.requestZoomPunch(ZOOM_PUNCH_LIGHT); // a gentle snap, no shake — challenges happen too often to rattle (#shake-polish)
       this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
@@ -1063,7 +1068,7 @@ export class MatchScene extends Phaser.Scene {
       this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
       this.kickCooldown = 0.12;
       audio.play('tackle');
-      this.shake(90, 0.006); // lighter jolt when the ball just pops loose (#139)
+      // no shake on a loose-ball pop — it fires constantly in a scrap; the sfx + fx read it (#shake-polish)
       this.fxBurst(this.ball.x, this.ball.y, C.light);
     } else if (slide) {
       t.recovery = 0.5; // whiffed slide → grounded (the risk)
@@ -1502,12 +1507,12 @@ export class MatchScene extends Phaser.Scene {
       // curl the free ball toward the aim's lateral side; treat as a firework
       const aySign = ay === 0 ? 1 : Math.sign(ay);
       this.ball.curve = curveAccel(rel.power01) * aySign;
-      this.shake(120, 0.006);
+      this.shake(110, 0.004); // light tick on the curler release (#shake-polish)
       this.requestTimeFx('screamer'); // one slow-mo, shared with the goal path (no extra strobe)
       this.requestZoomPunch();
       this.showBanner('CURLER!', C.lime, 550);
     } else if (charge > 0.8) {
-      this.shake(120, 0.006);
+      this.shake(120, 0.005); // a screamer release is intentional — modest, trimmed (#shake-polish)
       this.requestTimeFx('screamer'); // slow-mo as the screamer flies
       this.requestZoomPunch(); // camera punch on the screamer (#127)
       this.showBanner('SCREAMER!', C.surge, 500);
@@ -2073,6 +2078,7 @@ export class MatchScene extends Phaser.Scene {
   private updateBall(dt: number): void {
     if (this.kickCooldown > 0) this.kickCooldown -= dt;
     if (this.wallShakeCd > 0) this.wallShakeCd -= dt; // rate-limit wall/woodwork shake (#139)
+    if (this.shakeCd > 0) this.shakeCd -= dt; // global shake refractory window (#shake-polish)
 
     // possession clock (only ticks while a side actually holds the ball)
     if (this.ball.ownerIdx >= 0) this.possSec[this.players[this.ball.ownerIdx].side] += dt;
@@ -2397,7 +2403,7 @@ export class MatchScene extends Phaser.Scene {
 
   // Power-scaled camera shake for a 0..1 impact (#139), within the readability cap.
   private shakeFor(impact01: number): void {
-    this.shake(shakeDuration(impact01), shakeIntensity(impact01));
+    this.shake(shakeDuration(impact01), shakeIntensity(impact01), true); // a goal is THE moment — bypass the refractory (#shake-polish)
   }
 
   // Ball striking a wall / the woodwork: a tactile shake tick above a firm-hit
@@ -2406,14 +2412,21 @@ export class MatchScene extends Phaser.Scene {
   private wallShakeCd = 0;
   private onBallWallHit(speed: number, woodwork: boolean): void {
     if (speed < 240 || this.wallShakeCd > 0) return;
-    this.wallShakeCd = 0.12;
+    this.wallShakeCd = 0.16; // a touch longer gap between pinball ticks (#shake-polish)
     const impact = Math.min(1, speed / 980); // shotPower01-style normalisation
-    this.shake(woodwork ? 90 : 70, (woodwork ? 0.008 : 0.005) + impact * 0.004);
+    this.shake(woodwork ? 90 : 70, (woodwork ? 0.006 : 0.0035) + impact * 0.003); // trimmed woodwork/wall tick
     audio.playImpact(woodwork ? 'post' : 'wallthud', impact); // impact voice — not reduceMotion-gated (#134)
   }
 
-  private shake(dur: number, intensity: number): void {
-    if (!this.reduceMotion) this.cameras.main.shake(dur, intensity);
+  // Global shake gate (#shake-polish). A short refractory window stops back-to-back
+  // impacts from chaining into a rattle; `priority` (a goal) bypasses it and restamps
+  // the window so the big moment always lands even right after a woodwork clang.
+  private shakeCd = 0;
+  private shake(dur: number, intensity: number, priority = false): void {
+    if (this.reduceMotion) return;
+    if (!priority && this.shakeCd > 0) return;
+    this.shakeCd = SHAKE_REFRACTORY;
+    this.cameras.main.shake(dur, intensity, priority); // force-restart only for the priority (goal) shake
   }
 
   private flash(dur: number, r: number, g: number, b: number): void {
@@ -2439,9 +2452,9 @@ export class MatchScene extends Phaser.Scene {
   // back to the resting zoom. Gated like shake/flash (off under reduceMotion) and
   // only while the follow is live, so it never double-stacks with the full-time
   // victory zoom.
-  private requestZoomPunch(): void {
+  private requestZoomPunch(mult = ZOOM_PUNCH): void {
     if (this.reduceMotion || !this.camFollow) return;
-    this.zoomCur = this.restZoom * ZOOM_PUNCH;
+    this.zoomCur = this.restZoom * mult;
   }
 
   private renderEntities(): void {
@@ -3086,7 +3099,7 @@ export class MatchScene extends Phaser.Scene {
       this.requestZoomPunch();
       if (isLast) this.requestTimeFx('screamer'); // a beat on the decisive kick
     } else {
-      this.shake(70, 0.005);
+      this.shake(70, 0.004); // a missed penalty — a small thud, trimmed (#shake-polish)
     }
   }
 
