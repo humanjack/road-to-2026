@@ -43,6 +43,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio } from '../core/audio';
+import { cameraTarget, followStep } from '../core/camera';
 
 export interface MatchInit {
   homeId: string;
@@ -108,6 +109,15 @@ const HAIR = [0x1b1b1f, 0x2b1d12, 0x4a2f18, 0x6b4a2a, 0x111014];
 const GK_KIT_HOME = 0xffc53d; // amber
 const GK_KIT_AWAY = 0x19d3f0; // cyan
 const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-bar render
+
+// --- broadcast-arc camera (#125) ---------------------------------------------
+// A baseline follow-framing zoom so the camera can actually scroll within the
+// pitch (a follow camera over a world == viewport is inert). The configurable
+// ZOOM-LEVEL setting + ~55% framing + snap-zoom punches land in #127.
+const BROADCAST_ZOOM = 1.6; // baseline broadcast framing (~69% of pitch width in frame)
+const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack direction
+const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
+const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -197,6 +207,17 @@ export class MatchScene extends Phaser.Scene {
   private ballTint = 0xffffff;
   private finished = false;
 
+  // --- camera (#125) ---
+  // Two-camera split: main follows the action (zoom + scroll); uiCam renders the
+  // HUD pinned to the screen and unscaled. Every display object is routed to
+  // exactly one camera via onWorld()/onUi(). camTarget/camScratch are reused so
+  // the per-frame follow allocates nothing (matches the vScratch convention).
+  private uiCam!: Phaser.Cameras.Scene2D.Camera;
+  private camTarget = { x: 0, y: 0 };
+  private camScratch = { x: 0, y: 0 };
+  private worldBounds = { x: 0, y: 0, w: GAME_W, h: GAME_H };
+  private camFollow = true;
+
   constructor() {
     super('Match');
   }
@@ -234,6 +255,14 @@ export class MatchScene extends Phaser.Scene {
     this.puSpawnTimer = 6;
     this.puEffects = { home: { boost: 0, magnet: 0, frozen: 0 }, away: { boost: 0, magnet: 0, frozen: 0 } };
 
+    // Set up the two-camera split BEFORE building any display objects so each can
+    // be routed to its camera via onWorld()/onUi() as it is created.
+    this.uiCam = this.cameras.add(0, 0, GAME_W, GAME_H);
+    this.cameras.main.setBounds(0, 0, GAME_W, GAME_H);
+    this.cameras.main.setZoom(BROADCAST_ZOOM);
+    this.camFollow = true;
+    this.centerCameraOnPitch();
+
     this.drawPitch();
     this.buildHud();
     this.spawnPlayers();
@@ -263,6 +292,11 @@ export class MatchScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(50);
 
+    // Route the persistent graphics: world layers (pitch/players/ball/rings/trail)
+    // scroll with the main camera; the vignette + banner are screen-space HUD.
+    this.uiCam.ignore([this.trailGfx, this.shadowGfx, this.bodyGfx, this.dyn, this.chargeText, this.ballGfx]);
+    this.cameras.main.ignore([this.vignette, this.bannerText]);
+
     this.setupInput();
     this.beginKickoff('home');
     this.showBanner('KICK OFF', C.cyan, 1000);
@@ -275,13 +309,60 @@ export class MatchScene extends Phaser.Scene {
     audio.play('whistle');
   }
 
+  // --- camera (#125) -----------------------------------------------------
+
+  // Route a world-space object so the fixed HUD camera ignores it — it scrolls
+  // and zooms with play. Cheap one-shot at creation (never per frame).
+  private onWorld<T extends Phaser.GameObjects.GameObject>(o: T): T {
+    this.uiCam.ignore(o);
+    return o;
+  }
+
+  // Route a screen-space HUD object so the world camera ignores it — it stays
+  // pinned to the screen and unscaled regardless of follow/zoom.
+  private onUi<T extends Phaser.GameObjects.GameObject>(o: T): T {
+    this.cameras.main.ignore(o);
+    return o;
+  }
+
+  // Centre the main camera on the pitch (kickoff framing + the fulltime beat).
+  // setScroll is auto-clamped to the camera bounds.
+  private centerCameraOnPitch(): void {
+    const z = this.cameras.main.zoom;
+    this.cameras.main.setScroll(this.px + this.pw / 2 - GAME_W / z / 2, this.py + this.ph / 2 - GAME_H / z / 2);
+  }
+
+  // Broadcast-arc follow — runs once per real frame from renderEntities (NEVER
+  // in stepSim). Reads sim output only and writes the main camera scroll, so it
+  // cannot affect the deterministic simulation or replays. Math in core/camera.
+  private updateCamera(): void {
+    if (!this.camFollow) return;
+    const cam = this.cameras.main;
+    const z = cam.zoom;
+    const viewW = GAME_W / z;
+    const viewH = GAME_H / z;
+    const owner = this.ball.ownerIdx;
+    const hasOwner = owner >= 0;
+    const cx = hasOwner ? this.players[owner].x : this.ball.x;
+    const cy = hasOwner ? this.players[owner].y : this.ball.y;
+    const attackDir = hasOwner ? (this.players[owner].side === 'home' ? 1 : -1) : 0;
+    const lead = this.reduceMotion ? 0 : CAM_LEAD;
+    cameraTarget(this.ball.x, this.ball.y, cx, cy, hasOwner, attackDir, lead, this.camTarget);
+    const lerp = this.reduceMotion ? CAM_LERP_RM : CAM_LERP;
+    followStep(cam.scrollX, cam.scrollY, this.camTarget.x, this.camTarget.y, lerp, viewW, viewH, this.worldBounds, this.camScratch);
+    cam.setScroll(this.camScratch.x, this.camScratch.y);
+  }
+
   // --- setup -------------------------------------------------------------
 
   private drawPitch(): void {
     const aurora = getSave().cosmetics.pitch === 'aurora';
-    const g = this.add.graphics().setDepth(0);
+    const g = this.onWorld(this.add.graphics().setDepth(0));
     g.fillStyle(C.indigo, 1);
     g.fillRect(0, 0, GAME_W, GAME_H);
+    // Stadium surround behind the touchlines so a scrolled/zoomed broadcast frame
+    // reads as a stadium instead of blank margin (static fill; parallax is #128).
+    this.drawStadiumSurround(g, aurora);
     // turf stripes (aurora cosmetic re-tints the grass cool/violet)
     const stripeA = aurora ? 0x1b2a4a : 0x16331f;
     const stripeB = aurora ? 0x16223d : 0x12281a;
@@ -332,6 +413,29 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
+  // Stand bands + crowd speckle in the off-pitch margins. Drawn once into the
+  // pitch Graphics; deterministic (index-based, NO rng) so it can never shift the
+  // match's seeded random stream.
+  private drawStadiumSurround(g: Phaser.GameObjects.Graphics, aurora: boolean): void {
+    const standCol = aurora ? 0x141a30 : 0x0c1722;
+    const bottomY = this.py + this.ph;
+    const rightX = this.px + this.pw;
+    g.fillStyle(standCol, 1);
+    g.fillRect(0, 0, GAME_W, this.py); // top stand
+    g.fillRect(0, bottomY, GAME_W, GAME_H - bottomY); // bottom stand
+    g.fillRect(0, 0, this.px, GAME_H); // left stand
+    g.fillRect(rightX, 0, GAME_W - rightX, GAME_H); // right stand
+    // faint crowd speckle on the top + bottom stands (two rows each)
+    g.fillStyle(0x9aa7c7, 0.12);
+    for (let i = 0; i < 64; i++) {
+      const x = 14 + i * 20 + (i % 3) * 4; // deterministic jitter by index
+      if (x > GAME_W - 6) continue;
+      g.fillCircle(x, 22 + (i % 2) * 18, 2.2);
+      const yb = bottomY + 18 + (i % 2) * 18;
+      if (yb < GAME_H - 6) g.fillCircle(x, yb, 2.2);
+    }
+  }
+
   private buildHud(): void {
     const g = this.add.graphics().setDepth(30);
     g.fillStyle(C.deep, 0.92);
@@ -379,7 +483,7 @@ export class MatchScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     quit.on('pointerdown', () => this.abandon());
 
-    this.add
+    const hint = this.add
       .text(24, GAME_H - 22, 'Move WASD · Shoot Space · Pass J · Through L · Tackle I (hold=slide) · Skill O · Switch K', {
         fontFamily: FONT_BODY,
         fontSize: '14px',
@@ -399,6 +503,23 @@ export class MatchScene extends Phaser.Scene {
       .setOrigin(1, 1)
       .setDepth(31)
       .setVisible(getSave().settings.muted);
+
+    // The whole HUD lives on the fixed UI camera (pinned + unscaled); the world
+    // camera ignores all of it (#125).
+    this.cameras.main.ignore([
+      g,
+      this.hudHome,
+      this.hudAway,
+      this.hudScore,
+      this.hudClock,
+      ul,
+      cg,
+      this.surgeBar,
+      this.puHud,
+      quit,
+      hint,
+      this.muteTag,
+    ]);
   }
 
   private spawnPlayers(): void {
@@ -475,7 +596,10 @@ export class MatchScene extends Phaser.Scene {
       string,
       Phaser.Input.Keyboard.Key
     >;
-    // touch: left half = joystick, right half = shoot
+    // Touch: left half = joystick, right half = shoot. CRITICAL (#125): every
+    // pointer handler here uses SCREEN space (p.x / p.y), never worldX/worldY — the
+    // follow camera scrolls the world, but the on-screen joystick must stay anchored
+    // under the finger and the half-split must stay fixed to the screen.
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.x < GAME_W / 2) {
         this.touchVec.active = true;
@@ -795,7 +919,7 @@ export class MatchScene extends Phaser.Scene {
   // switch (reduceMotion: skipped — the gold active ring already marks it).
   private flashSwitch(p: Player): void {
     if (this.reduceMotion) return;
-    const ring = this.add.circle(p.x, p.y, PR + 6).setStrokeStyle(3, C.gold, 1).setDepth(21);
+    const ring = this.onWorld(this.add.circle(p.x, p.y, PR + 6).setStrokeStyle(3, C.gold, 1).setDepth(21));
     this.tweens.add({
       targets: ring,
       scale: 2.1,
@@ -842,20 +966,20 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private fxDust(x: number, y: number): void {
-    const d = this.add
-      .circle(x + this.rng.range(-3, 3), y + this.rng.range(-2, 4), this.rng.range(2, 4), 0xcfcad6, 0.5)
-      .setDepth(8);
+    const d = this.onWorld(
+      this.add.circle(x + this.rng.range(-3, 3), y + this.rng.range(-2, 4), this.rng.range(2, 4), 0xcfcad6, 0.5).setDepth(8),
+    );
     this.tweens.add({ targets: d, scale: 1.9, alpha: 0, duration: 360, onComplete: () => d.destroy() });
   }
 
   private fxSkid(x: number, y: number, ang: number): void {
-    const s = this.add.rectangle(x, y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang);
+    const s = this.onWorld(this.add.rectangle(x, y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang));
     this.tweens.add({ targets: s, alpha: 0, duration: 320, onComplete: () => s.destroy() });
   }
 
   private fxSpark(x: number, y: number, color: number): void {
     if (this.reduceMotion) return;
-    const ring = this.add.circle(x, y, BR + 1).setStrokeStyle(2, color, 0.9).setDepth(16);
+    const ring = this.onWorld(this.add.circle(x, y, BR + 1).setStrokeStyle(2, color, 0.9).setDepth(16));
     this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: 240, ease: 'Quad.easeOut', onComplete: () => ring.destroy() });
   }
 
@@ -864,7 +988,7 @@ export class MatchScene extends Phaser.Scene {
     for (let k = 0; k < 8; k++) {
       const a = this.rng.range(0, Math.PI * 2);
       const sp = this.rng.range(40, 120);
-      const dot = this.add.circle(x, y, this.rng.range(2, 4), color).setDepth(17);
+      const dot = this.onWorld(this.add.circle(x, y, this.rng.range(2, 4), color).setDepth(17));
       this.tweens.add({
         targets: dot,
         x: x + Math.cos(a) * sp,
@@ -1576,7 +1700,7 @@ export class MatchScene extends Phaser.Scene {
     // bloom + scorer/power popup (motion only; bloom alpha capped and slightly
     // delayed so it never co-peaks with the camera flash — photosensitivity).
     if (!this.reduceMotion) {
-      const bloom = this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0.25).setDepth(48);
+      const bloom = this.onUi(this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0.25).setDepth(48));
       this.tweens.add({ targets: bloom, alpha: 0, duration: 260, delay: 60, ease: 'Quad.easeIn', onComplete: () => bloom.destroy() });
       this.goalPopup(side, col, speed);
     }
@@ -1590,15 +1714,17 @@ export class MatchScene extends Phaser.Scene {
     const pwr = Math.min(99, Math.round(speed / 12));
     const code = homeScored ? this.home.code : this.away.code;
     const x0 = homeScored ? this.px + this.pw - 90 : this.px + 90;
-    const popup = this.add
-      .text(x0, this.py + this.ph / 2 - 64, `${code}  PWR ${pwr}`, {
-        fontFamily: FONT_DISPLAY,
-        fontSize: '22px',
-        color: hex(col),
-      })
-      .setOrigin(0.5)
-      .setDepth(49)
-      .setStroke('#0e0a24', 4); // dark outline keeps it legible on any pitch colour
+    const popup = this.onWorld(
+      this.add
+        .text(x0, this.py + this.ph / 2 - 64, `${code}  PWR ${pwr}`, {
+          fontFamily: FONT_DISPLAY,
+          fontSize: '22px',
+          color: hex(col),
+        })
+        .setOrigin(0.5)
+        .setDepth(49)
+        .setStroke('#0e0a24', 4), // dark outline keeps it legible on any pitch colour
+    );
     this.tweens.add({
       targets: popup,
       x: GAME_W / 2,
@@ -1620,7 +1746,7 @@ export class MatchScene extends Phaser.Scene {
       for (let i = 0; i < 22; i++) {
         const a = this.rng.range(0, Math.PI * 2);
         const sp = this.rng.range(60, 320);
-        const dot = this.add.circle(x, y, this.rng.range(2, 5), color).setDepth(40);
+        const dot = this.onWorld(this.add.circle(x, y, this.rng.range(2, 5), color).setDepth(40));
         this.tweens.add({
           targets: dot,
           x: x + Math.cos(a) * sp,
@@ -1643,9 +1769,11 @@ export class MatchScene extends Phaser.Scene {
       const col = palette[Math.floor(this.rng.range(0, palette.length))];
       const size = this.rng.range(2, 8);
       const glow = this.rng.bool(0.2);
-      const dot = glow
-        ? this.add.image(x, y, 'softcircle').setTint(col).setScale(size / 12).setDepth(40)
-        : (this.add.circle(x, y, size, col).setDepth(40) as Phaser.GameObjects.GameObject);
+      const dot = this.onWorld(
+        glow
+          ? this.add.image(x, y, 'softcircle').setTint(col).setScale(size / 12).setDepth(40)
+          : (this.add.circle(x, y, size, col).setDepth(40) as Phaser.GameObjects.GameObject),
+      );
       this.tweens.add({
         targets: dot,
         x: x + Math.cos(a) * sp,
@@ -1701,7 +1829,7 @@ export class MatchScene extends Phaser.Scene {
     const x = this.px + this.pw * this.rng.range(0.28, 0.72);
     const y = this.py + this.ph * this.rng.range(0.2, 0.8);
     const cfg = POWERUPS[type];
-    const c = this.add.container(x, y).setDepth(12);
+    const c = this.onWorld(this.add.container(x, y).setDepth(12));
     const ring = this.add.circle(0, 0, 17, cfg.color, 0.22).setStrokeStyle(3, cfg.color, 1);
     const icon = this.add
       .text(0, 0, cfg.icon, { fontFamily: FONT_DISPLAY, fontSize: '20px', color: hex(cfg.color) })
@@ -1815,6 +1943,8 @@ export class MatchScene extends Phaser.Scene {
       this.drawStaminaNub(ap);
     }
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
+
+    this.updateCamera(); // broadcast-arc follow (per-frame, reads sim output only)
   }
 
   // Stamina nub above the active player: a small bar that depletes as you sprint
@@ -2057,10 +2187,11 @@ export class MatchScene extends Phaser.Scene {
     if (!this.reduceMotion) {
       const w = 460;
       const cx = GAME_W / 2;
-      const flash =
+      const flash = this.onUi(
         side === 'home'
           ? this.add.rectangle(cx - w / 4, 84, w / 2, 10, 0xffffff, 0.9).setDepth(32)
-          : this.add.rectangle(cx + w / 4, 84, w / 2, 10, 0xffffff, 0.9).setDepth(32);
+          : this.add.rectangle(cx + w / 4, 84, w / 2, 10, 0xffffff, 0.9).setDepth(32),
+      );
       this.tweens.add({ targets: flash, alpha: 0, duration: 220, onComplete: () => flash.destroy() });
     }
     audio.play('surge');
@@ -2076,6 +2207,7 @@ export class MatchScene extends Phaser.Scene {
   private onFullTime(): void {
     if (this.state === 'fulltime' || this.state === 'pens') return;
     this.state = 'fulltime';
+    this.camFollow = false; // hand framing to the victory beat / end-of-match overlays
     this.showBanner('FULL TIME', C.gold, 1600);
     audio.play('whistle');
     const knockout = this.cfg.context === 'knockout';
@@ -2098,8 +2230,9 @@ export class MatchScene extends Phaser.Scene {
   private victoryZoomSpotlight(): void {
     this.time.delayedCall(250, () => {
       if (this.finished) return;
-      this.cameras.main.zoomTo(1.18, 1000, 'Quad.easeOut');
-      const spot = this.add.container(this.px + this.pw / 2, this.py + this.ph / 2).setDepth(46);
+      this.centerCameraOnPitch();
+      this.cameras.main.zoomTo(BROADCAST_ZOOM * 1.12, 1000, 'Quad.easeOut'); // punch in from the baseline framing
+      const spot = this.onWorld(this.add.container(this.px + this.pw / 2, this.py + this.ph / 2).setDepth(46));
       const sg = this.add.graphics();
       for (let i = 9; i >= 1; i--) {
         sg.fillStyle(0xffffff, 0.05);
@@ -2131,18 +2264,22 @@ export class MatchScene extends Phaser.Scene {
     // resolved score drops in from above and bounces.
     const cx = GAME_W / 2;
     const cy = GAME_H / 2;
-    const title = this.add
-      .text(cx, GAME_H + 60, 'PENALTIES', { fontFamily: FONT_DISPLAY, fontSize: '54px', color: CSS.surge })
-      .setOrigin(0.5)
-      .setDepth(51)
-      .setStroke('#0e0a24', 6);
-    this.tweens.add({ targets: title, y: cy - 64, duration: 600, ease: 'Back.easeOut' });
-    this.time.delayedCall(700, () => {
-      const score = this.add
-        .text(cx, -60, `${pens.home} - ${pens.away}`, { fontFamily: FONT_DISPLAY, fontSize: '78px', color: CSS.gold })
+    const title = this.onUi(
+      this.add
+        .text(cx, GAME_H + 60, 'PENALTIES', { fontFamily: FONT_DISPLAY, fontSize: '54px', color: CSS.surge })
         .setOrigin(0.5)
         .setDepth(51)
-        .setStroke('#0e0a24', 6);
+        .setStroke('#0e0a24', 6),
+    );
+    this.tweens.add({ targets: title, y: cy - 64, duration: 600, ease: 'Back.easeOut' });
+    this.time.delayedCall(700, () => {
+      const score = this.onUi(
+        this.add
+          .text(cx, -60, `${pens.home} - ${pens.away}`, { fontFamily: FONT_DISPLAY, fontSize: '78px', color: CSS.gold })
+          .setOrigin(0.5)
+          .setDepth(51)
+          .setStroke('#0e0a24', 6),
+      );
       this.tweens.add({ targets: score, y: cy + 26, duration: 650, ease: 'Bounce.easeOut' });
     });
     this.time.delayedCall(2400, () => this.finishMatch());
@@ -2226,32 +2363,38 @@ export class MatchScene extends Phaser.Scene {
     const cy = GAME_H / 2;
     const col = advanced ? C.lime : C.surge;
 
-    this.add.rectangle(cx, cy, GAME_W, GAME_H, C.deep, 0.72).setDepth(60);
-    const verdict = this.add
-      .text(cx, cy - 36, advanced ? 'ADVANCED' : 'ELIMINATED', {
-        fontFamily: FONT_DISPLAY,
-        fontSize: '72px',
-        color: hex(col),
-      })
-      .setOrigin(0.5)
-      .setDepth(61)
-      .setStroke('#0e0a24', 6);
-
-    const pens = this.penResult ? `  (${this.penResult.home}-${this.penResult.away}p)` : '';
-    this.add
-      .text(cx, cy + 34, `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}${pens}`, {
-        fontFamily: FONT_DISPLAY,
-        fontSize: '26px',
-        color: CSS.light,
-      })
-      .setOrigin(0.5)
-      .setDepth(61);
-    if (this.cfg.roundLabel) {
+    this.onUi(this.add.rectangle(cx, cy, GAME_W, GAME_H, C.deep, 0.72).setDepth(60));
+    const verdict = this.onUi(
       this.add
-        .text(cx, cy + 74, this.cfg.roundLabel.toUpperCase(), { fontFamily: FONT_BODY, fontSize: '16px', color: CSS.mid })
+        .text(cx, cy - 36, advanced ? 'ADVANCED' : 'ELIMINATED', {
+          fontFamily: FONT_DISPLAY,
+          fontSize: '72px',
+          color: hex(col),
+        })
         .setOrigin(0.5)
         .setDepth(61)
-        .setLetterSpacing(3);
+        .setStroke('#0e0a24', 6),
+    );
+
+    const pens = this.penResult ? `  (${this.penResult.home}-${this.penResult.away}p)` : '';
+    this.onUi(
+      this.add
+        .text(cx, cy + 34, `${this.home.code} ${this.homeGoals} - ${this.awayGoals} ${this.away.code}${pens}`, {
+          fontFamily: FONT_DISPLAY,
+          fontSize: '26px',
+          color: CSS.light,
+        })
+        .setOrigin(0.5)
+        .setDepth(61),
+    );
+    if (this.cfg.roundLabel) {
+      this.onUi(
+        this.add
+          .text(cx, cy + 74, this.cfg.roundLabel.toUpperCase(), { fontFamily: FONT_BODY, fontSize: '16px', color: CSS.mid })
+          .setOrigin(0.5)
+          .setDepth(61)
+          .setLetterSpacing(3),
+      );
     }
 
     if (!this.reduceMotion) {
@@ -2268,7 +2411,7 @@ export class MatchScene extends Phaser.Scene {
     for (let i = 0; i < 50; i++) {
       const x = this.rng.range(0, GAME_W);
       const col = colors[Math.floor(this.rng.range(0, colors.length))];
-      const piece = this.add.rectangle(x, this.rng.range(-40, -10), 4, 7, col).setDepth(62);
+      const piece = this.onUi(this.add.rectangle(x, this.rng.range(-40, -10), 4, 7, col).setDepth(62));
       this.tweens.add({
         targets: piece,
         y: GAME_H + 40,
