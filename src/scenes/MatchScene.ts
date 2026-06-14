@@ -1621,8 +1621,9 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private fxDust(x: number, y: number): void {
+    const wxc = this.wx(x, y); // sit FX on the perspective trapezoid (#192)
     const d = this.onWorld(
-      this.add.circle(x + this.rng.range(-3, 3), y + this.rng.range(-2, 4), this.rng.range(2, 4), 0xcfcad6, 0.5).setDepth(8),
+      this.add.circle(wxc + this.rng.range(-3, 3), y + this.rng.range(-2, 4), this.rng.range(2, 4), 0xcfcad6, 0.5).setDepth(8),
     );
     this.tweens.add({ targets: d, scale: 1.9, alpha: 0, duration: 360, onComplete: () => d.destroy() });
   }
@@ -1632,10 +1633,11 @@ export class MatchScene extends Phaser.Scene {
   // a burst. Fires once per engagement (rising edge); reduceMotion-gated, flash-free.
   private fxSprintBurst(x: number, y: number): void {
     if (this.reduceMotion) return;
+    const wxc = this.wx(x, y); // (#192)
     for (let k = 0; k < 5; k++) {
       const d = this.onWorld(
         this.add
-          .circle(x + this.rng.range(-7, 7), y + this.rng.range(-5, 7), this.rng.range(3, 6), 0xcfcad6, 0.55)
+          .circle(wxc + this.rng.range(-7, 7), y + this.rng.range(-5, 7), this.rng.range(3, 6), 0xcfcad6, 0.55)
           .setDepth(8),
       );
       this.tweens.add({ targets: d, scale: 2.4, alpha: 0, duration: 420, ease: 'Quad.easeOut', onComplete: () => d.destroy() });
@@ -1643,7 +1645,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private fxSkid(x: number, y: number, ang: number): void {
-    const s = this.onWorld(this.add.rectangle(x, y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang));
+    const s = this.onWorld(this.add.rectangle(this.wx(x, y), y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang)); // (#192)
     this.tweens.add({ targets: s, alpha: 0, duration: 320, onComplete: () => s.destroy() });
   }
 
@@ -1655,13 +1657,14 @@ export class MatchScene extends Phaser.Scene {
 
   private fxBurst(x: number, y: number, color: number): void {
     if (this.reduceMotion) return;
+    const wxc = this.wx(x, y); // burst spreads around the warped centre (#192)
     for (let k = 0; k < 8; k++) {
       const a = this.rng.range(0, Math.PI * 2);
       const sp = this.rng.range(40, 120);
-      const dot = this.onWorld(this.add.circle(x, y, this.rng.range(2, 4), color).setDepth(17));
+      const dot = this.onWorld(this.add.circle(wxc, y, this.rng.range(2, 4), color).setDepth(17));
       this.tweens.add({
         targets: dot,
-        x: x + Math.cos(a) * sp,
+        x: wxc + Math.cos(a) * sp,
         y: y + Math.sin(a) * sp,
         alpha: 0,
         duration: this.rng.range(220, 360),
@@ -2357,7 +2360,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private fxScuff(x: number, y: number): void {
-    const d = this.onWorld(this.add.circle(x, y, 3, 0xcfcad6, 0.45).setDepth(8));
+    const d = this.onWorld(this.add.circle(this.wx(x, y), y, 3, 0xcfcad6, 0.45).setDepth(8)); // (#192)
     this.tweens.add({ targets: d, scale: 2, alpha: 0, duration: 280, onComplete: () => d.destroy() });
   }
 
@@ -2573,8 +2576,8 @@ export class MatchScene extends Phaser.Scene {
 
   private goalBurst(color: number, power01 = 0.5): void {
     const homeScored = this.lastScorer === 'home';
-    const x = homeScored ? this.px + this.pw - 20 : this.px + 20;
     const y = this.py + this.ph / 2;
+    const x = this.wx(homeScored ? this.px + this.pw - 20 : this.px + 20, y); // warped goal-mouth origin (#192)
 
     // reduceMotion: keep the original subdued radial puff.
     if (this.reduceMotion) {
@@ -2666,7 +2669,9 @@ export class MatchScene extends Phaser.Scene {
     const x = this.px + this.pw * this.rng.range(0.28, 0.72);
     const y = this.py + this.ph * this.rng.range(0.2, 0.8);
     const cfg = POWERUPS[type];
-    const c = this.onWorld(this.add.container(x, y).setDepth(12));
+    // display the widget on the trapezoid (#192); the stored x/y stay FLAT for the
+    // sim's collision check (collectPowerup measures flat distance to the ball).
+    const c = this.onWorld(this.add.container(this.wx(x, y), y).setDepth(12));
     const ring = this.add.circle(0, 0, 17, cfg.color, 0.22).setStrokeStyle(3, cfg.color, 1);
     const icon = this.add
       .text(0, 0, cfg.icon, { fontFamily: FONT_DISPLAY, fontSize: '20px', color: hex(cfg.color) })
@@ -2836,7 +2841,7 @@ export class MatchScene extends Phaser.Scene {
     if (this.ball.z > 1) {
       const shrink = Math.max(0.35, 1 - this.ball.z * 0.0022);
       this.trailGfx.fillStyle(C.deep, 0.32);
-      this.trailGfx.fillEllipse(this.ball.x, this.ball.y, BR * 2.2 * shrink, BR * 1.4 * shrink);
+      this.trailGfx.fillEllipse(this.wx(this.ball.x, this.ball.y), this.ball.y, BR * 2.2 * shrink, BR * 1.4 * shrink); // warped (#192)
     }
 
     // Surge vignette — screen edges glow in the surging team's colour
@@ -2910,7 +2915,7 @@ export class MatchScene extends Phaser.Scene {
     const ds = depthScale(ap.y, this.py, this.ph);
     const bw = 28;
     const bh = 4;
-    const bx = ap.x - bw / 2;
+    const bx = this.wx(ap.x, ap.y) - bw / 2; // warp by feet y, matching the figure + chevron (#192)
     const by = ap.y - 3.55 * PR * ds - 27; // above the head + the active chevron
     this.dyn.fillStyle(C.dark, 0.6);
     this.dyn.fillRect(bx, by, bw, bh);
@@ -3205,7 +3210,7 @@ export class MatchScene extends Phaser.Scene {
     const charge = Math.min(1, (this.time.now - this.chargeStart) / CHARGE_MS);
     const bw = 50;
     const bh = 7;
-    const bx = ap.x - bw / 2;
+    const bx = this.wx(ap.x, ap.y) - bw / 2; // warp the whole bar onto the trapezoid (#192)
     const by = ap.y + PR + 9;
     // faint full-width track split into the three zones
     this.dyn.fillStyle(C.dark, 0.55);
@@ -3236,7 +3241,7 @@ export class MatchScene extends Phaser.Scene {
     this.chargeText
       .setText(`${Math.round(charge * 100)}%`)
       .setColor(inSweet ? CSS.lime : charge > 0.8 ? CSS.surge : CSS.light)
-      .setPosition(ap.x, by - 9)
+      .setPosition(this.wx(ap.x, ap.y), by - 9)
       .setVisible(true);
   }
 
