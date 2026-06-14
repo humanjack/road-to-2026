@@ -228,6 +228,7 @@ export class MatchScene extends Phaser.Scene {
     this.prevHudHome = 0;
     this.prevHudAway = 0;
     this.elapsed = 0;
+    this.acc = 0;
     this.players = [];
     this.powerups = [];
     this.puSpawnTimer = 6;
@@ -632,19 +633,42 @@ export class MatchScene extends Phaser.Scene {
     this.pickActive();
   }
 
-  update(_time: number, deltaMs: number): void {
-    const dt = Math.min(0.05, deltaMs / 1000);
-    if (this.finished) return;
+  // Fixed simulation step (60Hz). The sim only ever advances by this constant,
+  // so physics/AI are identical at any display refresh rate — the prerequisite
+  // for deterministic replays and lock-step netcode.
+  private static readonly FIXED_DT = 1 / 60;
+  // Spiral-of-death guard: at most this many sim steps catch up per render frame
+  // (a long stall drops time rather than freezing).
+  private static readonly MAX_STEPS = 5;
+  private acc = 0; // leftover real time waiting to become a fixed step
 
+  update(_time: number, deltaMs: number): void {
+    if (this.finished) return;
+    // accumulate real time (capped against a tab stall) and drain it in fixed steps
+    this.acc += Math.min(0.1, deltaMs / 1000);
+    let steps = 0;
+    while (this.acc >= MatchScene.FIXED_DT && steps < MatchScene.MAX_STEPS) {
+      this.stepSim(MatchScene.FIXED_DT);
+      this.acc -= MatchScene.FIXED_DT;
+      steps++;
+      if (this.finished) return; // a step finished the match → it's leaving the scene
+    }
+    if (this.acc > MatchScene.FIXED_DT) this.acc = 0; // hit the cap → drop the backlog
+    // render once per real frame, regardless of how many sim steps ran
+    this.renderEntities();
+    this.updateHud();
+  }
+
+  // Advance the simulation by one fixed step. No rendering here — that happens
+  // once per frame in update() after all steps, so it never depends on dt.
+  private stepSim(dt: number): void {
     if (this.state === 'kickoff') {
       this.stateTimer -= dt;
-      this.renderEntities();
       if (this.stateTimer <= 0) this.state = 'play';
       return;
     }
     if (this.state === 'goal') {
       this.stateTimer -= dt;
-      this.renderEntities();
       if (this.stateTimer <= 0) {
         const conceding: Side = this.lastScorer === 'home' ? 'away' : 'home';
         this.beginKickoff(conceding);
@@ -654,10 +678,7 @@ export class MatchScene extends Phaser.Scene {
       }
       return;
     }
-    if (this.state === 'fulltime' || this.state === 'pens') {
-      this.renderEntities();
-      return;
-    }
+    if (this.state === 'fulltime' || this.state === 'pens') return;
 
     // PLAY
     this.elapsed += dt;
@@ -673,8 +694,6 @@ export class MatchScene extends Phaser.Scene {
     this.updateMovementFx(dt); // sprint dust / turn skid on the active player
     this.updateSurge(dt);
     this.updatePowerups(dt);
-    this.renderEntities();
-    this.updateHud();
 
     // music tension tracks the bigger Surge meter + how late the match is
     const tension = Math.max(this.surgeHome, this.surgeAway) / 100;
