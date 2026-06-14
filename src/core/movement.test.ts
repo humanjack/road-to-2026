@@ -5,6 +5,8 @@ import {
   STAMINA,
   carryOffset,
   carryStreakAlpha,
+  surgeCadence,
+  SURGE_CADENCE_GAIN,
   easeCarryAngle,
   CARRY_BASE,
   bufferConsumable,
@@ -999,5 +1001,31 @@ describe('carryStreakAlpha (#136 knock-on readability)', () => {
 
   it('a full sprint-touch (ballExposure at sprint carry distance) streaks', () => {
     expect(carryStreakAlpha(ballExposure(52), true)).toBeGreaterThan(0); // 52px ≈ full sprint knock
+  });
+});
+
+describe('surgeCadence (#138 surge-reactive run cadence)', () => {
+  it('is exactly 1.0 baseline at no surge (no change to the run path)', () => {
+    expect(surgeCadence(0)).toBe(1);
+    expect(surgeCadence(-0.5)).toBe(1); // guarded
+  });
+
+  it('increases monotonically with surge', () => {
+    let prev = -Infinity;
+    for (let s = 0; s <= 1.0001; s += 0.1) {
+      const c = surgeCadence(s);
+      expect(c).toBeGreaterThanOrEqual(prev);
+      prev = c;
+    }
+  });
+
+  it('caps at 1 + gain at full surge and clamps beyond', () => {
+    expect(surgeCadence(1)).toBeCloseTo(1 + SURGE_CADENCE_GAIN, 6);
+    expect(surgeCadence(5)).toBeCloseTo(1 + SURGE_CADENCE_GAIN, 6); // clamped
+  });
+
+  it('is finite for all 0..1 inputs and guards non-finite', () => {
+    for (let s = 0; s <= 1; s += 0.05) expect(Number.isFinite(surgeCadence(s))).toBe(true);
+    expect(surgeCadence(NaN)).toBe(1);
   });
 });

@@ -526,6 +526,18 @@ export function carryStreakAlpha(exposure: number, sprinting: boolean, cue = 0.3
 }
 
 /**
+ * Surge-reactive run cadence multiplier (#138): the surging side's legs turn over
+ * faster and swing wider. 1.0 at no surge, ramping monotonically to 1+gain at full
+ * surge (surge01 ∈ 0..1), clamped. Pure — the render layer multiplies the run-cycle
+ * frequency + limb amplitude by it; it never feeds the sim.
+ */
+export const SURGE_CADENCE_GAIN = 0.35;
+export function surgeCadence(surge01: number, gain = SURGE_CADENCE_GAIN): number {
+  if (!Number.isFinite(surge01) || surge01 <= 0) return 1;
+  return 1 + gain * (surge01 > 1 ? 1 : surge01);
+}
+
+/**
  * Resolve a tackle attempt. Out of reach → always a miss. In reach, success
  * scales monotonically with closeness, carrier exposure, and defender skill; a
  * win is a clean `steal` when very close/skilled, otherwise the ball pops
