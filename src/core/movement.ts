@@ -405,3 +405,58 @@ export function runActive(elapsed: number, phase: number, period = 4, duty = 0.5
   const t = ((elapsed * 0.6 + phase) % period) / period;
   return t < duty;
 }
+
+// --- goalkeeper ------------------------------------------------------------
+//
+// A competent keeper isn't a cone on the line — it positions on the angle (the
+// line from its goal-centre to the ball, narrowing the shooter's view) and
+// comes off the line as the ball nears. When a shot arrives it makes a save
+// weighted by how well it's positioned and its reaction, so well-placed corner
+// shots still beat it (fair) but tame efforts on its body are stopped.
+
+export type SaveResult = 'catch' | 'parry' | 'beaten';
+
+/** Keeper reach for a diving save (px from its body to the ball). */
+export const SAVE_REACH = 52;
+
+/**
+ * Where the keeper should stand: on the goal-centre→ball line (narrowing the
+ * angle), coming off its line toward the ball the nearer the ball gets. Y is
+ * clamped to just outside the posts so it always protects the mouth.
+ */
+export function keeperTarget(
+  ballX: number,
+  ballY: number,
+  goalLineX: number,
+  goalCenterY: number,
+  comeOutSign: number, // +1 if the keeper advances toward +x, -1 toward -x
+  goalH: number,
+  maxOut = 78,
+  reactDist = 340,
+): { x: number; y: number } {
+  const ballDist = Math.abs(ballX - goalLineX);
+  const depth = Math.min(maxOut, Math.max(8, maxOut * (1 - ballDist / reactDist)));
+  const keeperX = goalLineX + comeOutSign * depth;
+  // Y on the goal-centre→ball line at the keeper's depth (narrows the angle)
+  const denom = ballX - goalLineX;
+  const ratio = Math.abs(denom) < 1 ? 0 : depth / Math.abs(denom);
+  let keeperY = goalCenterY + (ballY - goalCenterY) * Math.min(1, ratio);
+  const half = goalH / 2 + 10;
+  keeperY = Math.min(goalCenterY + half, Math.max(goalCenterY - half, keeperY));
+  return { x: keeperX, y: keeperY };
+}
+
+/**
+ * Resolve a shot that has reached the keeper. Out of reach → beaten. In reach,
+ * a save is likelier the more central the ball is to the keeper and the higher
+ * its reaction; a strong save is a clean `catch`, a marginal one a `parry`
+ * (loose rebound). Deterministic given `roll`. Capped < 1 so it's never a wall.
+ */
+export function saveOutcome(distToBall: number, reach: number, reaction: number, roll: number): SaveResult {
+  if (!(distToBall <= reach) || reach <= 0) return 'beaten';
+  const prox = 1 - distToBall / reach;
+  const react = Math.min(1, Math.max(0, reaction));
+  const save = Math.min(0.97, Math.max(0.05, 0.2 + prox * 0.5 + react * 0.35));
+  if (roll < save) return (prox + react) * 0.5 > 0.62 ? 'catch' : 'parry';
+  return 'beaten';
+}

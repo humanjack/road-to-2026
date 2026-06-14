@@ -19,6 +19,9 @@ import {
   forwardRunTarget,
   supportTarget,
   runActive,
+  keeperTarget,
+  saveOutcome,
+  SAVE_REACH,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -412,5 +415,51 @@ describe('off-ball movement', () => {
     // and a single phase is sometimes on (t≈0.015), sometimes off (t=0.75)
     const states = new Set([runActive(0.1, 0), runActive(5.0, 0)]);
     expect(states.size).toBe(2);
+  });
+});
+
+describe('keeperTarget', () => {
+  // home goal at x=64 (left), centre y=360, comes out toward +x
+  const gx = 64;
+  const cy = 376;
+  const gh = 168;
+
+  it('stays between the ball and the goal, on the shot line', () => {
+    const k = keeperTarget(700, 200, gx, cy, 1, gh);
+    expect(k.x).toBeGreaterThan(gx); // off its line, toward the field
+    expect(k.x).toBeLessThan(700); // but still goal-side of the ball
+    // narrows the angle: keeper Y is on the goal-centre→ball side of centre
+    expect(k.y).toBeLessThan(cy); // ball is above centre → keeper shades up
+  });
+
+  it('comes further off its line as the ball gets closer', () => {
+    const far = keeperTarget(900, cy, gx, cy, 1, gh);
+    const near = keeperTarget(180, cy, gx, cy, 1, gh);
+    expect(near.x - gx).toBeGreaterThan(far.x - gx);
+  });
+
+  it('keeps the keeper within the mouth band and respects away direction', () => {
+    const high = keeperTarget(700, -500, gx, cy, 1, gh);
+    expect(high.y).toBeGreaterThanOrEqual(cy - gh / 2 - 10);
+    const away = keeperTarget(500, 300, 1216, cy, -1, gh); // away goal on the right
+    expect(away.x).toBeLessThan(1216); // comes out toward -x
+  });
+});
+
+describe('saveOutcome', () => {
+  it('is beaten when the ball is out of reach', () => {
+    expect(saveOutcome(SAVE_REACH + 1, SAVE_REACH, 1, 0)).toBe('beaten');
+  });
+  it('catches a central shot with good reaction and a low roll', () => {
+    expect(saveOutcome(2, SAVE_REACH, 0.9, 0.05)).toBe('catch');
+  });
+  it('is never a wall: a high roll can still beat a well-placed keeper', () => {
+    expect(saveOutcome(2, SAVE_REACH, 1, 0.99)).toBe('beaten');
+  });
+  it('is monotonic: closer + better reaction never lowers the save tier', () => {
+    const rank = (r: string) => (r === 'beaten' ? 0 : r === 'parry' ? 1 : 2);
+    const weak = saveOutcome(SAVE_REACH * 0.9, SAVE_REACH, 0.2, 0.5);
+    const strong = saveOutcome(SAVE_REACH * 0.1, SAVE_REACH, 0.9, 0.5);
+    expect(rank(strong)).toBeGreaterThanOrEqual(rank(weak));
   });
 });
