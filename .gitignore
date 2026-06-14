@@ -11,3 +11,6 @@ coverage
 # QA / test artifacts
 slice*.png
 .playwright-mcp/
+
+# local reference material (videos/images), not project assets
+references/
