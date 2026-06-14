@@ -29,6 +29,9 @@ import {
   forwardRunTarget,
   supportTarget,
   runActive,
+  keeperTarget,
+  saveOutcome,
+  SAVE_REACH,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -85,6 +88,7 @@ interface Player {
   sprinting: boolean; // transient: is this player sprint-moving this frame (drives ball knock-on)
   tackleCd: number; // seconds until this player may attempt another tackle
   recovery: number; // seconds grounded after a whiffed slide (can't move/act)
+  ballHold: number; // seconds a keeper has held a caught ball (drives distribution)
 }
 
 const PR = 15; // player radius
@@ -433,6 +437,7 @@ export class MatchScene extends Phaser.Scene {
       sprinting: false,
       tackleCd: 0,
       recovery: 0,
+      ballHold: 0,
     };
   }
 
@@ -1044,19 +1049,89 @@ export class MatchScene extends Phaser.Scene {
     });
   }
 
-  private updateGK(p: Player, _dt: number): void {
-    const goalX = p.side === 'home' ? this.px + 24 : this.px + this.pw - 24;
+  private updateGK(p: Player, dt: number): void {
     const cy = this.py + this.ph / 2;
-    let targetY = Phaser.Math.Clamp(this.ball.y, cy - this.goalH / 2, cy + this.goalH / 2);
-    // rush out if ball very close and in our third
-    const closeBall = dist(p.x, p.y, this.ball.x, this.ball.y) < 90;
+    const owns = this.ball.ownerIdx >= 0 && this.players[this.ball.ownerIdx] === p;
+    // Caught it: hold briefly, then distribute upfield (roll/throw to a mate).
+    if (owns) {
+      p.ballHold += dt;
+      const goalX = p.side === 'home' ? this.px + 24 : this.px + this.pw - 24;
+      this.steer(p, goalX, Phaser.Math.Clamp(this.ball.y, cy - this.goalH / 2, cy + this.goalH / 2), this.playerSpeed(p, p.side) * 0.9, dt);
+      if (p.ballHold > 0.55) {
+        this.aiPassToTeammate(p); // distribution: best forward outlet
+        p.ballHold = 0;
+      }
+      return;
+    }
+    p.ballHold = 0;
+    const goalLineX = p.side === 'home' ? this.px : this.px + this.pw;
+    const comeOutSign = p.side === 'home' ? 1 : -1;
+    // rush out to smother a very close ball in our third; otherwise hold the angle
+    const closeBall = dist(p.x, p.y, this.ball.x, this.ball.y) < 88;
     const inOurThird = p.side === 'home' ? this.ball.x < this.px + 200 : this.ball.x > this.px + this.pw - 200;
-    let targetX = goalX;
+    let targetX: number;
+    let targetY: number;
     if (closeBall && inOurThird) {
       targetX = this.ball.x;
       targetY = this.ball.y;
+    } else {
+      const t = keeperTarget(this.ball.x, this.ball.y, goalLineX, cy, comeOutSign, this.goalH);
+      targetX = t.x;
+      targetY = t.y;
     }
-    this.steer(p, targetX, targetY, this.playerSpeed(p, p.side) * 0.95, _dt);
+    this.steer(p, targetX, targetY, this.playerSpeed(p, p.side) * 0.95, dt);
+  }
+
+  // Resolve a fast shot that has reached a keeper: catch (hold → distribute),
+  // parry (loose rebound away from goal), or beaten (continues, may score). The
+  // keeper lunges toward the ball regardless (the dive). Reaction is
+  // difficulty-scaled so corner shots beat it but tame efforts don't.
+  private resolveKeeperSaves(): void {
+    if (this.ball.ownerIdx >= 0) return;
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
+    if (speed < 220) return; // only shots/driven balls trigger a diving save
+    for (let i = 0; i < this.players.length; i++) {
+      const k = this.players[i];
+      if (k.role !== 'GK') continue;
+      // the ball must be heading toward THIS keeper's goal
+      const towardOwnGoal = k.side === 'home' ? this.ball.vx < 0 : this.ball.vx > 0;
+      if (!towardOwnGoal) continue;
+      const d = dist(k.x, k.y, this.ball.x, this.ball.y);
+      if (d > SAVE_REACH) continue;
+      // dive: lunge toward the ball's line
+      const dy = this.ball.y - k.y;
+      k.vy += Math.sign(dy) * Math.min(220, Math.abs(dy) * 8);
+      const reaction = this.keeperReaction(k.side);
+      const res = saveOutcome(d, SAVE_REACH, reaction, this.rng.next());
+      if (res === 'catch') {
+        this.ball.ownerIdx = i;
+        this.ball.vx = 0;
+        this.ball.vy = 0;
+        this.ballCarryAng = Math.atan2(k.faceY, k.faceX);
+        k.ballHold = 0;
+        audio.play('save');
+      } else if (res === 'parry') {
+        // deflect the rebound away from goal (out toward the field, off the line)
+        const away = k.side === 'home' ? 1 : -1;
+        this.ball.vx = away * Math.max(260, Math.abs(this.ball.vx) * 0.6);
+        this.ball.vy = (this.ball.y - k.y) * 4 + this.rng.range(-60, 60);
+        this.lastKickIdx = i;
+        this.kickCooldown = 0.1;
+        audio.play('save');
+      }
+      // 'beaten' → ball continues unchanged (the goal-line check may score it)
+      return; // at most one keeper resolves per frame
+    }
+  }
+
+  // Keeper reaction 0..1 from team defence + difficulty (the GDD's difficulty-
+  // scaled shot-stopping). The away keeper rides the AI difficulty; the user's
+  // keeper gets a steady, fair reaction.
+  private keeperReaction(side: Side): number {
+    const team = side === 'home' ? this.home : this.away;
+    const base = 0.45 + (team.defense - 70) / 120; // ~0.3..0.7 by team
+    const diffTerm = side === 'away' ? (this.diff.aiAccuracy - 0.7) * 0.4 : 0;
+    return Math.min(0.92, Math.max(0.2, base + diffTerm));
   }
 
   private aiShoot(p: Player, goalX: number, goalY: number): void {
@@ -1246,6 +1321,10 @@ export class MatchScene extends Phaser.Scene {
       this.ball.y = this.py + this.ph - BR;
       this.ball.vy = -Math.abs(this.ball.vy) * 0.7;
     }
+
+    // a keeper may dive on a shot before it reaches the line
+    this.resolveKeeperSaves();
+    if (this.ball.ownerIdx >= 0) return; // caught — stop free motion this frame
 
     // goal lines
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
