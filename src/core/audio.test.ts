@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { crowdLevelFromSurge } from './audio';
+import { crowdLevelFromSurge, isClosingPhase, musicIntensity } from './audio';
 
 describe('crowdLevelFromSurge (#134)', () => {
   it('has a non-zero rest floor (the crowd is never dead silent)', () => {
@@ -29,5 +29,24 @@ describe('crowdLevelFromSurge (#134)', () => {
     expect(crowdLevelFromSurge(-1, -1)).toBeGreaterThan(0); // still the floor
     expect(crowdLevelFromSurge(-1, -1)).toBeLessThanOrEqual(1);
     expect(crowdLevelFromSurge(NaN, NaN)).toBeGreaterThan(0);
+  });
+});
+
+describe('isClosingPhase / musicIntensity (#141)', () => {
+  it('flips to true exactly at the final-10% boundary', () => {
+    expect(isClosingPhase(107, 120)).toBe(false);
+    expect(isClosingPhase(108, 120)).toBe(true); // 120 * 0.9
+    expect(isClosingPhase(120, 120)).toBe(true);
+  });
+
+  it('holds the bed at the closing floor regardless of a late tension drop (MAX rule)', () => {
+    expect(musicIntensity(0.3, true)).toBe(0.9); // a late goal dropped tension → floor holds the climax
+    expect(musicIntensity(0.95, true)).toBe(0.95); // already higher → base wins
+    expect(musicIntensity(0.3, false)).toBe(0.3); // outside the closing phase → base
+  });
+
+  it('handles a zero duration and a non-finite base', () => {
+    expect(isClosingPhase(10, 0)).toBe(false);
+    expect(musicIntensity(NaN, true)).toBe(0.9);
   });
 });

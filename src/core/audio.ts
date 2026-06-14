@@ -5,7 +5,21 @@
 
 import { getSave, updateSettings } from './save';
 
-type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint' | 'whiff' | 'bump';
+type SfxName =
+  | 'ui'
+  | 'kick'
+  | 'pass'
+  | 'shoot'
+  | 'goal'
+  | 'whistle'
+  | 'save'
+  | 'surge'
+  | 'win'
+  | 'tackle'
+  | 'sprint'
+  | 'whiff'
+  | 'bump'
+  | 'closing';
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -185,6 +199,11 @@ class AudioManager {
         this.tone(130, 0.07, 'sine', 0.16, 80);
         this.noise(0.05, 0.07, 'lowpass', 420);
         break;
+      case 'closing':
+        // two ascending alert beeps as the clock enters the final minutes (#141)
+        this.tone(740, 0.1, 'square', 0.13);
+        window.setTimeout(() => this.tone(990, 0.1, 'square', 0.12), 120);
+        break;
       case 'goal':
         [0, 4, 7, 12].forEach((semi, i) => {
           window.setTimeout(() => this.tone(440 * Math.pow(2, semi / 12), 0.18, 'square', 0.26), i * 70);
@@ -218,6 +237,19 @@ class AudioManager {
     this.tone(185 - p * 45, 0.09 + p * 0.05, 'sine', 0.3 + p * 0.22, 80);
     this.noise(0.04 + p * 0.03, 0.1 + p * 0.1, 'bandpass', 1300 - p * 450);
     if (p > 0.72) this.tone(70, 0.18, 'sine', 0.28); // sub thump for a screamer
+  }
+
+  // A deliberate closing whistle + a downward music sting for full time (#141).
+  // Same sfx/mute gating as play(); NOT gated by reduceMotion (audio is no strobe).
+  finalWhistle(): void {
+    if (!this.sfxOn || this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    this.tone(2100, 0.18, 'square', 0.18); // a long, doubled whistle blast
+    window.setTimeout(() => this.tone(2300, 0.16, 'square', 0.16), 120);
+    window.setTimeout(() => this.tone(2050, 0.34, 'square', 0.18, 1500), 260); // long falling final blast
+    window.setTimeout(() => this.tone(330, 0.5, 'triangle', 0.16, 120), 200); // descending music sting under it
   }
 
   // Speed-scaled impact one-shots (#134): a muffled wall thump or a sharper
@@ -368,4 +400,22 @@ export function crowdLevelFromSurge(surge01: number, lateness01: number): number
   const s = Number.isFinite(surge01) ? Math.min(1, Math.max(0, surge01)) : 0;
   const late = Number.isFinite(lateness01) ? Math.min(1, Math.max(0, lateness01)) : 0;
   return Math.min(1, 0.12 + s * 0.75 + late * 0.15);
+}
+
+/**
+ * True in the final `frac` of the match — the closing crescendo window (#141). A
+ * pure function of elapsed/duration (no wall-clock) so replays reproduce the phase.
+ */
+export function isClosingPhase(elapsed: number, duration: number, frac = 0.1): boolean {
+  return duration > 0 && elapsed >= duration * (1 - frac);
+}
+
+/**
+ * Music-intensity arbitration (#141): in the closing phase the bed is held at
+ * least at `closingFloor`, so a late-goal tension drop can't deflate the climax;
+ * outside it the base ramp wins. A documented MAX rule.
+ */
+export function musicIntensity(base: number, closing: boolean, closingFloor = 0.9): number {
+  const b = Number.isFinite(base) ? base : 0;
+  return closing ? Math.max(b, closingFloor) : b;
 }

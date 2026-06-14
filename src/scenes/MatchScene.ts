@@ -51,7 +51,7 @@ import {
   type TackleResult,
   type PassMate,
 } from '../core/movement';
-import { audio, crowdLevelFromSurge } from '../core/audio';
+import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
 import { limbPose, selectPose, chooseCelebrant } from '../core/poses';
 import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
@@ -251,6 +251,7 @@ export class MatchScene extends Phaser.Scene {
   private autoSwitch = true; // auto-switch to the nearest defender on defence
   private ballTint = 0xffffff;
   private finished = false;
+  private closingCued = false; // one-shot latch for the closing-minutes cue (#141)
 
   // --- camera (#125) ---
   // Two-camera split: main follows the action (zoom + scroll); uiCam renders the
@@ -296,6 +297,7 @@ export class MatchScene extends Phaser.Scene {
     this.awayGoals = 0;
     this.surgeHome = 0;
     this.surgeAway = 0;
+    this.closingCued = false; // fresh match: closing cue not yet fired (#141)
     this.shots = { home: 0, away: 0 };
     this.onTarget = { home: 0, away: 0 };
     this.possSec = { home: 0, away: 0 };
@@ -1001,8 +1003,16 @@ export class MatchScene extends Phaser.Scene {
 
     // music tension tracks the bigger Surge meter + how late the match is
     const tension = Math.max(this.surgeHome, this.surgeAway) / 100;
-    audio.setIntensity(0.25 + tension * 0.5 + (this.elapsed / this.duration) * 0.2);
+    const closing = isClosingPhase(this.elapsed, this.duration); // final ~10% (#141), pure of elapsed
+    const baseIntensity = 0.25 + tension * 0.5 + (this.elapsed / this.duration) * 0.2;
+    audio.setIntensity(musicIntensity(baseIntensity, closing)); // closing floor wins over a late-goal tension drop
     audio.setCrowd(crowdLevelFromSurge(tension, this.elapsed / this.duration)); // crowd breathes with Surge (#134)
+    // one-shot closing-minutes cue the first step we enter the final stretch (#141)
+    if (closing && !this.closingCued) {
+      this.closingCued = true;
+      audio.play('closing');
+      this.showBanner('FINAL MINUTES', C.flare, 700);
+    }
 
     if (this.elapsed >= this.duration) this.onFullTime();
   }
@@ -2436,6 +2446,13 @@ export class MatchScene extends Phaser.Scene {
     }
     const minute = Math.floor((this.elapsed / this.duration) * 90);
     this.hudClock.setText(`${minute}'`);
+    // closing-minutes alert tint + gentle pulse (#141): the colour is information
+    // (renders under reduceMotion); the pulse is motion (gated).
+    if (isClosingPhase(this.elapsed, this.duration)) {
+      this.hudClock.setColor(CSS.flare).setScale(this.reduceMotion ? 1 : 1 + 0.12 * this.pulse);
+    } else {
+      this.hudClock.setColor(CSS.mid).setScale(1);
+    }
     this.drawSurgeBar();
     if (this.surgeHome >= 100) this.tagSurge('home');
     if (this.surgeAway >= 100) this.tagSurge('away');
@@ -2555,8 +2572,8 @@ export class MatchScene extends Phaser.Scene {
     this.time.timeScale = 1;
     this.tweens.timeScale = 1;
     this.zoomCur = this.restZoom; // drop any residual snap-zoom before the victory beat
-    this.showBanner('FULL TIME', C.gold, 1600);
-    audio.play('whistle');
+    audio.finalWhistle(); // deliberate closing whistle + downward sting (#141)
+    this.time.delayedCall(220, () => this.showBanner('FULL TIME', C.gold, 1600)); // timed behind the whistle peak
     const knockout = this.cfg.context === 'knockout';
     if (knockout && this.homeGoals === this.awayGoals) {
       this.state = 'pens';
