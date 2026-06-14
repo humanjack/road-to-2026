@@ -558,6 +558,62 @@ export function easeToward(cur: number, target: number, dt: number, rate = 3): n
   return cur + (target - cur) * (k > 1 ? 1 : k);
 }
 
+// --- goal firework + charged-shot heat trail (#145) -------------------------
+//
+// Pure mapping math for the goal-celebration escalation and the in-flight heat
+// trail. Render-only consumers; no sim coupling.
+
+function clamp01v(t: number): number {
+  return !Number.isFinite(t) ? 0 : t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+/** Channel-wise RGB lerp of two 0xRRGGBB ints. */
+export function lerpColor(a: number, b: number, t: number): number {
+  const k = clamp01v(t);
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  const r = Math.round(ar + (br - ar) * k);
+  const g = Math.round(ag + (bg - ag) * k);
+  const bl = Math.round(ab + (bb - ab) * k);
+  return (r << 16) | (g << 8) | bl;
+}
+
+export interface HeatTrail {
+  hot: boolean; // false ⇒ a pass/clearance/zero-charge ball: only the faint generic trail
+  color: number; // Flare-Orange → Surge-Magenta by charge
+  length: number; // trail-buffer cap, grows with charge
+  comet: boolean; // full-screamer comet core
+}
+export const HEAT_FLARE = 0xff7a33;
+export const HEAT_SURGE = 0xff2e88;
+
+/** Charge → heat-trail params. charge ≤ 0 ⇒ no hot trail; ≥ 0.8 ⇒ comet. */
+export function heatTrail(charge01: number, flare = HEAT_FLARE, surge = HEAT_SURGE): HeatTrail {
+  const c = clamp01v(charge01);
+  if (c <= 0) return { hot: false, color: surge, length: 8, comet: false };
+  return { hot: true, color: lerpColor(flare, surge, c), length: Math.round(8 + 6 * c), comet: c >= 0.8 };
+}
+
+export interface BurstParams {
+  count: number; // particle count (scales with power, capped)
+  speedMax: number; // cone exit-speed ceiling
+  glowChance: number; // fraction of particles that are soft glows
+  bloomAlpha: number; // full-screen bloom alpha — ALWAYS ≤ BLOOM_ALPHA_CAP
+}
+export const BLOOM_ALPHA_CAP = 0.25; // photosensitivity ceiling — never exceeded, any power
+
+/** Goal power → firework params. A tap-in keeps ~today's look; a screamer escalates. */
+export function goalBurstParams(power01: number): BurstParams {
+  const p = clamp01v(power01);
+  const bloom = 0.18 + 0.07 * p;
+  return {
+    count: Math.round(40 + 24 * p), // 40 → 64
+    speedMax: 360 + 120 * p, // 360 → 480
+    glowChance: 0.2 + 0.15 * p, // 0.2 → 0.35
+    bloomAlpha: bloom > BLOOM_ALPHA_CAP ? BLOOM_ALPHA_CAP : bloom,
+  };
+}
+
 /**
  * Resolve a tackle attempt. Out of reach → always a miss. In reach, success
  * scales monotonically with closeness, carrier exposure, and defender skill; a
