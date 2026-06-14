@@ -9,6 +9,12 @@ import {
   SURGE_CADENCE_GAIN,
   possessionShare,
   easeToward,
+  heatTrail,
+  goalBurstParams,
+  lerpColor,
+  HEAT_SURGE,
+  HEAT_FLARE,
+  BLOOM_ALPHA_CAP,
   easeCarryAngle,
   CARRY_BASE,
   bufferConsumable,
@@ -1071,5 +1077,58 @@ describe('easeToward (#143 display glide)', () => {
   it('is a no-op for non-positive dt and recovers from non-finite cur', () => {
     expect(easeToward(0.4, 0.9, 0)).toBe(0.4);
     expect(easeToward(NaN, 0.7, 1 / 60)).toBe(0.7);
+  });
+});
+
+describe('heatTrail (#145 charged-shot heat trail)', () => {
+  it('is NOT hot at zero/negative charge (passes & clearances stay faint)', () => {
+    expect(heatTrail(0).hot).toBe(false);
+    expect(heatTrail(-1).hot).toBe(false);
+    expect(heatTrail(0).comet).toBe(false);
+  });
+  it('is hot above zero charge with length growing with charge', () => {
+    expect(heatTrail(0.3).hot).toBe(true);
+    expect(heatTrail(0.9).length).toBeGreaterThan(heatTrail(0.3).length);
+  });
+  it('becomes a comet at >= 0.8 charge', () => {
+    expect(heatTrail(0.79).comet).toBe(false);
+    expect(heatTrail(0.8).comet).toBe(true);
+    expect(heatTrail(1).comet).toBe(true);
+  });
+  it('colour lerps Flare → Surge and clamps endpoints', () => {
+    expect(heatTrail(1).color).toBe(HEAT_SURGE);
+    expect(heatTrail(0.0001).color).not.toBe(HEAT_SURGE); // near the flare end
+    expect(heatTrail(5).length).toBe(heatTrail(1).length); // clamped
+  });
+  it('lerpColor is channel-wise and clamps t', () => {
+    expect(lerpColor(0x000000, 0xffffff, 0)).toBe(0x000000);
+    expect(lerpColor(0x000000, 0xffffff, 1)).toBe(0xffffff);
+    expect(lerpColor(0x000000, 0xffffff, 0.5)).toBe(0x808080); // round(127.5) = 128
+    expect(lerpColor(0x000000, 0xffffff, 9)).toBe(0xffffff); // clamp
+    expect(lerpColor(HEAT_FLARE, HEAT_SURGE, NaN)).toBe(HEAT_FLARE); // non-finite → t=0
+  });
+});
+
+describe('goalBurstParams (#145 power-scaled firework)', () => {
+  it('a tap-in (power 0) keeps ~today’s 40-particle look', () => {
+    expect(goalBurstParams(0).count).toBe(40);
+  });
+  it('a screamer escalates count / speed / glow, capped', () => {
+    const tap = goalBurstParams(0);
+    const scr = goalBurstParams(1);
+    expect(scr.count).toBeGreaterThan(tap.count);
+    expect(scr.count).toBe(64); // cap
+    expect(scr.speedMax).toBeGreaterThan(tap.speedMax);
+    expect(scr.glowChance).toBeGreaterThan(tap.glowChance);
+  });
+  it('bloom alpha scales but NEVER exceeds the photosensitivity cap', () => {
+    for (let p = 0; p <= 1.5; p += 0.1) {
+      expect(goalBurstParams(p).bloomAlpha).toBeLessThanOrEqual(BLOOM_ALPHA_CAP);
+    }
+    expect(goalBurstParams(99).bloomAlpha).toBeLessThanOrEqual(BLOOM_ALPHA_CAP);
+    expect(goalBurstParams(1).bloomAlpha).toBeCloseTo(BLOOM_ALPHA_CAP, 6); // reaches but doesn't exceed
+  });
+  it('guards non-finite power', () => {
+    expect(goalBurstParams(NaN).count).toBe(40);
   });
 });

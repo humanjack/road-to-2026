@@ -55,6 +55,8 @@ import {
   surgeCadence,
   possessionShare,
   easeToward,
+  heatTrail,
+  goalBurstParams,
   type BufferedInput,
   type TackleResult,
   type PassMate,
@@ -282,6 +284,7 @@ export class MatchScene extends Phaser.Scene {
   private passCone = PASS_CONE.full; // assist-cone width from the pass-assist setting
   private autoSwitch = true; // auto-switch to the nearest defender on defence
   private ballTint = 0xffffff;
+  private ballShotCharge = 0; // charge of the kick that launched the loose ball (#145 heat trail); render-only metadata
   private finished = false;
   private closingCued = false; // one-shot latch for the closing-minutes cue (#141)
 
@@ -371,6 +374,7 @@ export class MatchScene extends Phaser.Scene {
       settings.passAssist === 'manual' ? PASS_CONE.manual : settings.passAssist === 'semi' ? PASS_CONE.semi : PASS_CONE.full;
     this.autoSwitch = settings.defensiveSwitch !== 'manual';
     this.ballTrail = [];
+    this.ballShotCharge = 0;
     this.trailGfx = this.add.graphics().setDepth(14);
     this.netGfx = this.onWorld(this.add.graphics().setDepth(6)); // goal net, behind players (#135)
     this.shadowGfx = this.add.graphics().setDepth(9);
@@ -1358,7 +1362,8 @@ export class MatchScene extends Phaser.Scene {
     const vx = (ax / len) * power;
     const vy = (ay / len) * power;
     this.registerShot(p.side, p.x, p.y, vx, vy); // straight launch → on-target heuristic unchanged
-    this.kickBall(p, vx, vy); // resets ball.curve to 0
+    this.kickBall(p, vx, vy); // resets ball.curve to 0 + ballShotCharge to 0
+    this.ballShotCharge = charge; // tag the live shot for the heat trail (#145; passes/AI kicks stay 0)
     if (charge < CHIP_CHARGE) this.loftBall(170); // a light tap chips the shot up + over a keeper (#132)
     if (rel.sweet) {
       // curl the free ball toward the aim's lateral side; treat as a firework
@@ -1528,6 +1533,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.vy = vy;
     this.ball.ownerIdx = -1;
     this.ball.curve = 0; // a fresh kick / pass has no curve until fireShot sets it (#133)
+    this.ballShotCharge = 0; // default: not a charged shot (fireShot re-tags after) → no heat trail (#145)
     this.ball.z = 0; // grounded by default; doThroughBall / fireShot may loft it after (#132)
     this.ball.vz = 0;
     this.ball.grounded = true;
@@ -2084,19 +2090,22 @@ export class MatchScene extends Phaser.Scene {
     if (side === 'home') this.surgeHome = 0;
     else this.surgeAway = 0;
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
-    this.shakeFor(shotPower01(speed)); // power-scaled goal shake: a screamer rattles, a tap-in nudges (#139)
+    const burstPow = shotPower01(speed); // a screamer from distance gets the biggest firework (#145)
+    this.shakeFor(burstPow); // power-scaled goal shake: a screamer rattles, a tap-in nudges (#139)
     this.flash(180, 255, 255, 255);
     const col = side === 'home' ? this.homeColor : this.awayColor;
     this.showBanner('GOAL!', col, 1300);
     this.updateHud();
     this.state = 'goal';
     this.stateTimer = freeze; // re-budgeted post-goal beat (#140)
-    // burst of particles
-    this.goalBurst(col);
-    // bloom + scorer/power popup (motion only; bloom alpha capped and slightly
-    // delayed so it never co-peaks with the camera flash — photosensitivity).
+    // burst of particles — count/spread/glow scale with shot power (#145)
+    this.goalBurst(col, burstPow);
+    // bloom + scorer/power popup (motion only; bloom alpha scales with power but stays
+    // capped at BLOOM_ALPHA_CAP and slightly delayed so it never co-peaks with the
+    // camera flash — photosensitivity unchanged; only particles/trail escalate).
     if (!this.reduceMotion) {
-      const bloom = this.onUi(this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0.25).setDepth(48));
+      const bloomA = goalBurstParams(burstPow).bloomAlpha; // ≤ 0.25 for any power
+      const bloom = this.onUi(this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, bloomA).setDepth(48));
       this.tweens.add({ targets: bloom, alpha: 0, duration: 260, delay: 60, ease: 'Quad.easeIn', onComplete: () => bloom.destroy() });
       this.goalPopup(side, col, speed);
     }
@@ -2132,7 +2141,7 @@ export class MatchScene extends Phaser.Scene {
     });
   }
 
-  private goalBurst(color: number): void {
+  private goalBurst(color: number, power01 = 0.5): void {
     const homeScored = this.lastScorer === 'home';
     const x = homeScored ? this.px + this.pw - 20 : this.px + 20;
     const y = this.py + this.ph / 2;
@@ -2155,16 +2164,18 @@ export class MatchScene extends Phaser.Scene {
       return;
     }
 
-    // Full juice: ~40 mixed-colour particles sprayed in a 120° cone out of the
-    // goal mouth into the field, arcing down under gravity; ~1 in 5 is a glow.
+    // Full juice: a power-scaled cone (40 → 64 particles, hotter/longer for a
+    // screamer) sprayed in a 120° cone out of the goal mouth into the field,
+    // arcing down under gravity; the glow fraction also grows with power (#145).
+    const params = goalBurstParams(power01);
     const baseAngle = homeScored ? Math.PI : 0;
     const palette = [color, C.gold, C.white];
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < params.count; i++) {
       const a = baseAngle + this.rng.range(-Math.PI / 3, Math.PI / 3);
-      const sp = this.rng.range(80, 360);
+      const sp = this.rng.range(80, params.speedMax);
       const col = palette[Math.floor(this.rng.range(0, palette.length))];
       const size = this.rng.range(2, 8);
-      const glow = this.rng.bool(0.2);
+      const glow = this.rng.bool(params.glowChance);
       const dot = this.onWorld(
         glow
           ? this.add.image(x, y, 'softcircle').setTint(col).setScale(size / 12).setDepth(40)
@@ -2351,21 +2362,33 @@ export class MatchScene extends Phaser.Scene {
     const streak = carryStreakAlpha(carryExposure, !!carrier && carrier.sprinting && !this.reduceMotion, CARRY_EXPOSE_CUE);
     const knockOn = streak > 0;
     const looseFast = this.ball.ownerIdx < 0 && speed > 140;
+    // charged-shot heat trail (#145): a tagged shot in flight wears a Flare→Surge
+    // comet whose length/intensity scales with charge. Clear a stale tag once the
+    // ball is owned so it can't colour a later loose ball. reduceMotion suppresses it.
+    if (this.ball.ownerIdx >= 0) this.ballShotCharge = 0;
+    const heat = heatTrail(this.ball.ownerIdx < 0 ? this.ballShotCharge : 0);
+    const hotShot = heat.hot && looseFast && !this.reduceMotion;
+    const trailCap = hotShot ? heat.length : 8; // a hot shot grows the same buffer
     if (looseFast || knockOn) {
       this.ballTrail.push({ x: this.ball.x, y: this.ball.y });
-      if (this.ballTrail.length > 8) this.ballTrail.shift();
+      if (this.ballTrail.length > trailCap) this.ballTrail.shift();
     } else if (this.ballTrail.length) {
       this.ballTrail.shift();
     }
-    // a knock-on streak tints toward the owner's team colour and fades up with
-    // exposure (a controlled-but-loose touch); a loose ball keeps the neutral tint
-    const trailTint = knockOn ? (carrier!.side === 'home' ? this.homeColor : this.awayColor) : this.ballTint;
-    const trailMax = knockOn ? 0.5 * streak : 0.5;
+    // hot shot → Flare→Surge heat; knock-on → owner colour; else the neutral tint
+    const trailTint = hotShot ? heat.color : knockOn ? (carrier!.side === 'home' ? this.homeColor : this.awayColor) : this.ballTint;
+    const trailMax = hotShot ? 0.72 : knockOn ? 0.5 * streak : 0.5;
+    const headScale = hotShot ? 1.2 : 1;
     this.ballTrail.forEach((t, i) => {
       const f = i / this.ballTrail.length;
       this.trailGfx.fillStyle(trailTint, f * trailMax);
-      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + f * 0.6));
+      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + f * 0.6) * headScale);
     });
+    // full-screamer comet core: a brighter hot head on the ball itself
+    if (hotShot && heat.comet) {
+      this.trailGfx.fillStyle(C.white, 0.5);
+      this.trailGfx.fillCircle(this.ball.x, this.ball.y, BR * 0.9);
+    }
     // airborne ball shadow on the pitch at the true ground point (#132): the cue the
     // ball is lofted (unreachable by ground players). Renders under reduceMotion too.
     if (this.ball.z > 1) {
