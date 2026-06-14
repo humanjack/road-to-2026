@@ -4,6 +4,7 @@ import {
   stepStamina,
   STAMINA,
   carryOffset,
+  carryStreakAlpha,
   easeCarryAngle,
   CARRY_BASE,
   bufferConsumable,
@@ -968,5 +969,35 @@ describe('squashStretch (#131 the single figure scale channel)', () => {
     expect(isHardStop(-100)).toBe(false);
     expect(isHardStop(2200)).toBe(false); // accel, not a stop
     expect(isHardStop(NaN)).toBe(false);
+  });
+});
+
+describe('carryStreakAlpha (#136 knock-on readability)', () => {
+  it('is 0 for a tight close-control touch (exposure at/under the cue)', () => {
+    expect(carryStreakAlpha(0, true)).toBe(0);
+    expect(carryStreakAlpha(0.3, true)).toBe(0); // exactly at the default cue
+    expect(carryStreakAlpha(0.267, true)).toBe(0); // observed jog distance — no streak
+  });
+
+  it('is 0 when the carrier is not sprinting, regardless of exposure', () => {
+    expect(carryStreakAlpha(0.9, false)).toBe(0);
+  });
+
+  it('scales with exposure above the cue and is monotonic', () => {
+    const a = carryStreakAlpha(0.4, true);
+    const b = carryStreakAlpha(0.7, true);
+    const c = carryStreakAlpha(1, true);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+  });
+
+  it('clamps to 1 for an over-exposed input and guards non-finite', () => {
+    expect(carryStreakAlpha(5, true)).toBe(1);
+    expect(carryStreakAlpha(NaN, true)).toBe(0);
+  });
+
+  it('a full sprint-touch (ballExposure at sprint carry distance) streaks', () => {
+    expect(carryStreakAlpha(ballExposure(52), true)).toBeGreaterThan(0); // 52px ≈ full sprint knock
   });
 });
