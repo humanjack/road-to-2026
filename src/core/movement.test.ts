@@ -16,6 +16,9 @@ import {
   SLIDE_REACH,
   choosePassTarget,
   throughBallLead,
+  forwardRunTarget,
+  supportTarget,
+  runActive,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -378,5 +381,36 @@ describe('throughBallLead', () => {
   it('respects attack direction (away team attacks -x)', () => {
     const r = throughBallLead(100, 100, 0, 0, -1);
     expect(r.x).toBeLessThan(100); // led toward -x goal
+  });
+});
+
+describe('off-ball movement', () => {
+  it('forwardRunTarget runs ahead of the ball toward goal, in the player lane', () => {
+    const r = forwardRunTarget(300, 500, 1, 64, 1216, 200);
+    expect(r.x).toBeGreaterThan(500); // ahead of the ball (attacking +x)
+    expect(r.y).toBe(300); // stays in lane (width)
+  });
+  it('forwardRunTarget never camps past the playable band', () => {
+    const r = forwardRunTarget(300, 1200, 1, 64, 1216, 400); // ball already deep
+    expect(r.x).toBeLessThanOrEqual(1216 - 40);
+  });
+  it('supportTarget sits goal-side (behind) the carrier — a safe outlet', () => {
+    const home = supportTarget(800, 360, 360, 1); // home attacks +x → support is at lower x
+    expect(home.x).toBeLessThan(800);
+    const away = supportTarget(400, 360, 360, -1); // away attacks -x → support is at higher x
+    expect(away.x).toBeGreaterThan(400);
+  });
+  it('runActive cycles on and off over time and desyncs by phase', () => {
+    // at the same elapsed, two phases shouldn't always agree
+    let agree = 0;
+    const N = 40;
+    for (let k = 0; k < N; k++) {
+      const e = k * 0.25;
+      if (runActive(e, 0) === runActive(e, 2)) agree++;
+    }
+    expect(agree).toBeLessThan(N); // they diverge at least sometimes (staggered)
+    // and a single phase is sometimes on (t≈0.015), sometimes off (t=0.75)
+    const states = new Set([runActive(0.1, 0), runActive(5.0, 0)]);
+    expect(states.size).toBe(2);
   });
 });

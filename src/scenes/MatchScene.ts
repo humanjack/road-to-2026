@@ -26,6 +26,9 @@ import {
   SLIDE_REACH,
   choosePassTarget,
   throughBallLead,
+  forwardRunTarget,
+  supportTarget,
+  runActive,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -1004,10 +1007,36 @@ export class MatchScene extends Phaser.Scene {
         if (oppOwns && p.tackleCd <= 0 && dist(p.x, p.y, this.ball.x, this.ball.y) < POKE_REACH) {
           this.attemptTackle(i, this.rng.bool(0.12 * this.diff.aiAccuracy));
         }
+      } else if (teamHasBall) {
+        // IN POSSESSION, off the ball: offer options instead of standing in shape
+        const carrier = this.players[this.ball.ownerIdx];
+        if (p.role === 'FWD') {
+          // staggered depth run ahead of the ball (a through-ball target, #97),
+          // dropping to a high line between runs so the defence can recover/react
+          if (runActive(this.elapsed, p.phase)) {
+            const r = forwardRunTarget(p.hy, this.ball.x, attackDir, this.px, this.px + this.pw, 200);
+            tx = r.x;
+            ty = r.y;
+          } else {
+            tx = Phaser.Math.Clamp(this.ball.x + attackDir * 70, this.px + 40, this.px + this.pw - 40);
+            ty = p.hy;
+          }
+        } else if (p.role === 'MID') {
+          // short support angle goal-side of the carrier (a safe outlet, #96)
+          const s = supportTarget(carrier.x, carrier.y, p.hy, attackDir, 90);
+          tx = s.x;
+          ty = s.y;
+        } else {
+          // defenders push the line up modestly + shift ball-side, but stay home-ish
+          const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw;
+          tx = p.hx + attackDir * 40 + ballAdvance * 70 * attackDir;
+          ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.2;
+        }
       } else {
-        // hold shape, shift toward ball-side, push up when attacking
+        // OUT OF POSSESSION (not the chaser): defensive shape — drop a touch and
+        // shift to the ball side
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
-        tx = p.hx + attackDir * (teamHasBall ? 70 : -10) + ballAdvance * 90 * attackDir;
+        tx = p.hx + attackDir * -10 + ballAdvance * 90 * attackDir;
         ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.18;
       }
 
