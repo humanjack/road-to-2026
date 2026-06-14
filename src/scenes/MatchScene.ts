@@ -43,7 +43,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio } from '../core/audio';
-import { cameraTarget, followStep, baseZoom, zoomPunchStep } from '../core/camera';
+import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
 export interface MatchInit {
@@ -727,6 +727,7 @@ export class MatchScene extends Phaser.Scene {
       audio.play('tackle'); // physical thwock of a won challenge
       this.requestTimeFx('tackle'); // brief hit-stop on the clean steal
       this.requestZoomPunch(); // camera punch on the clean steal (#127)
+      this.shake(110, 0.009); // short crisp jolt on the clean steal (#139)
       this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
@@ -735,6 +736,7 @@ export class MatchScene extends Phaser.Scene {
       this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
       this.kickCooldown = 0.12;
       audio.play('tackle');
+      this.shake(90, 0.006); // lighter jolt when the ball just pops loose (#139)
       this.fxBurst(this.ball.x, this.ball.y, C.light);
     } else if (slide) {
       t.recovery = 0.5; // whiffed slide → grounded (the risk)
@@ -1611,6 +1613,7 @@ export class MatchScene extends Phaser.Scene {
 
   private updateBall(dt: number): void {
     if (this.kickCooldown > 0) this.kickCooldown -= dt;
+    if (this.wallShakeCd > 0) this.wallShakeCd -= dt; // rate-limit wall/woodwork shake (#139)
 
     // possession clock (only ticks while a side actually holds the ball)
     if (this.ball.ownerIdx >= 0) this.possSec[this.players[this.ball.ownerIdx].side] += dt;
@@ -1676,9 +1679,11 @@ export class MatchScene extends Phaser.Scene {
 
     // top/bottom walls
     if (this.ball.y < this.py + BR) {
+      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), false); // incoming speed before the bounce (#139)
       this.ball.y = this.py + BR;
       this.ball.vy = Math.abs(this.ball.vy) * 0.7;
     } else if (this.ball.y > this.py + this.ph - BR) {
+      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), false);
       this.ball.y = this.py + this.ph - BR;
       this.ball.vy = -Math.abs(this.ball.vy) * 0.7;
     }
@@ -1695,6 +1700,7 @@ export class MatchScene extends Phaser.Scene {
         this.scoreGoal('away');
         return;
       }
+      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), true); // off the post / byline — sharper tick (#139)
       this.ball.x = this.px + BR;
       this.ball.vx = Math.abs(this.ball.vx) * 0.6;
     } else if (this.ball.x > this.px + this.pw - BR) {
@@ -1702,6 +1708,7 @@ export class MatchScene extends Phaser.Scene {
         this.scoreGoal('home');
         return;
       }
+      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), true); // off the far post / byline (#139)
       this.ball.x = this.px + this.pw - BR;
       this.ball.vx = -Math.abs(this.ball.vx) * 0.6;
     }
@@ -1720,7 +1727,7 @@ export class MatchScene extends Phaser.Scene {
     if (side === 'home') this.surgeHome = 0;
     else this.surgeAway = 0;
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
-    this.shake(260, 0.012);
+    this.shakeFor(shotPower01(speed)); // power-scaled goal shake: a screamer rattles, a tap-in nudges (#139)
     this.flash(180, 255, 255, 255);
     const col = side === 'home' ? this.homeColor : this.awayColor;
     this.showBanner('GOAL!', col, 1300);
@@ -1886,6 +1893,22 @@ export class MatchScene extends Phaser.Scene {
   }
 
   // --- rendering ---------------------------------------------------------
+
+  // Power-scaled camera shake for a 0..1 impact (#139), within the readability cap.
+  private shakeFor(impact01: number): void {
+    this.shake(shakeDuration(impact01), shakeIntensity(impact01));
+  }
+
+  // Ball striking a wall / the woodwork: a tactile shake tick above a firm-hit
+  // threshold, rate-limited by wallShakeCd so fast pinball never blurs the frame.
+  // (Also the seam #134 hangs the wall/post impact SFX off.)
+  private wallShakeCd = 0;
+  private onBallWallHit(speed: number, woodwork: boolean): void {
+    if (speed < 240 || this.wallShakeCd > 0) return;
+    this.wallShakeCd = 0.12;
+    const impact = Math.min(1, speed / 980); // shotPower01-style normalisation
+    this.shake(woodwork ? 90 : 70, (woodwork ? 0.008 : 0.005) + impact * 0.004);
+  }
 
   private shake(dur: number, intensity: number): void {
     if (!this.reduceMotion) this.cameras.main.shake(dur, intensity);

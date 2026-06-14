@@ -137,3 +137,21 @@ export function zoomPunchStep(cur: number, base: number, dtSec: number, decayPer
   const next = base + (cur - base) * Math.pow(decayPerSec, dtSec);
   return Math.abs(next - base) < 0.001 ? base : next;
 }
+
+// --- screen-shake curve (#139) ---------------------------------------------
+
+/**
+ * Camera-shake intensity for a 0..1 impact, from a celebratory floor up to a hard
+ * readability cap — even a max-power hit must keep the pitch/HUD trackable.
+ * Monotonic; clamps the impact into [0,1]. Pure scalar (no allocation).
+ */
+export function shakeIntensity(impact01: number, floor = 0.006, cap = 0.016): number {
+  const t = impact01 < 0 ? 0 : impact01 > 1 ? 1 : impact01;
+  return floor + (cap - floor) * t;
+}
+
+/** Camera-shake duration (ms) for a 0..1 impact: a longer rattle for a bigger hit. */
+export function shakeDuration(impact01: number, floor = 200, cap = 320): number {
+  const t = impact01 < 0 ? 0 : impact01 > 1 ? 1 : impact01;
+  return floor + (cap - floor) * t;
+}
