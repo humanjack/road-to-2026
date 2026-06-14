@@ -4,7 +4,7 @@ import { buildControlLegend, MATCH_CONTROLS } from '../ui/controls';
 import { displayName } from '../data/names';
 import { resolveTeam, ballColor } from '../data/extras';
 import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
-import { recordMatch, getSave } from '../core/save';
+import { recordMatch, getSave, updateSettings } from '../core/save';
 import { penaltyShootout, type PenKick, type PenShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
 import {
@@ -74,6 +74,13 @@ import {
   parallaxShift,
   velocityLead,
   deadzone1d,
+  viewFromDigit,
+  viewZoomLevel,
+  viewForZoomLevel,
+  cameraViewConfig,
+  fitZoom,
+  tacticalBounds,
+  type CameraView,
 } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
@@ -169,6 +176,7 @@ const CAM_DEADZONE_RM = 40; // reduce-motion: a larger steady hold (an even calm
 const PARALLAX_FACTOR = 0.6; // stadium backdrop scrolls at 60% of the turf → broadcast depth
 const PARALLAX_FACTOR_RM = 0.82; // reduce-motion: a much subtler depth differential
 const PARALLAX_MARGIN = 360; // px the backdrop over-covers the world so a pan never reveals void
+const TACTICAL_MARGIN = 130; // px of stand/surround revealed around the pitch in the TACTICAL view (#176)
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
@@ -284,6 +292,7 @@ export class MatchScene extends Phaser.Scene {
   private prevShotsHome = -1;
   private prevShotsAway = -1;
   private bannerText!: Phaser.GameObjects.Text;
+  private camToast!: Phaser.GameObjects.Text; // brief camera-view label (#176)
   private ballGfx!: Phaser.GameObjects.Arc;
   private trailGfx!: Phaser.GameObjects.Graphics;
   private netGfx!: Phaser.GameObjects.Graphics; // goal net mesh (#135)
@@ -323,6 +332,10 @@ export class MatchScene extends Phaser.Scene {
   private restZoom = 2.0; // resting broadcast zoom from the ZOOM setting (#127)
   private zoomCur = 2.0; // live zoom, eased back to restZoom after a snap-zoom punch
   private realDtSec = 1 / 60; // last real frame delta (render-side zoom-punch decay)
+  // multi-view camera (#176): the player's chosen framing, switched on the number
+  // keys. Follow views (full/broadcast/tight) drive restZoom; tactical is a static
+  // zoomed-out overhead with the follow handed off.
+  private currentView: CameraView = 'broadcast';
 
   // --- time-fx (#126): slow-mo + hit-stop, presentation-side only ---
   private timeFlow = createTimeFlow();
@@ -372,6 +385,7 @@ export class MatchScene extends Phaser.Scene {
 
     // Set up the two-camera split BEFORE building any display objects so each can
     // be routed to its camera via onWorld()/onUi() as it is created.
+    this.currentView = viewForZoomLevel(getSave().settings.zoomLevel); // boot into the saved framing (#176)
     this.restZoom = baseZoom(getSave().settings.zoomLevel); // ZOOM setting → resting framing (#127)
     this.zoomCur = this.restZoom;
     this.uiCam = this.cameras.add(0, 0, GAME_W, GAME_H);
@@ -415,11 +429,18 @@ export class MatchScene extends Phaser.Scene {
       .text(GAME_W / 2, GAME_H / 2, '', { fontFamily: FONT_DISPLAY, fontSize: '72px', color: CSS.white })
       .setOrigin(0.5)
       .setDepth(50);
+    // Camera-view toast (#176): a small, unobtrusive label below centre, distinct
+    // from the big match banner. Screen-space (pinned to the UI camera).
+    this.camToast = this.add
+      .text(GAME_W / 2, GAME_H * 0.64, '', { fontFamily: FONT_DISPLAY, fontSize: '26px', color: CSS.light })
+      .setOrigin(0.5)
+      .setDepth(50)
+      .setAlpha(0);
 
     // Route the persistent graphics: world layers (pitch/players/ball/rings/trail)
     // scroll with the main camera; the vignette + banner are screen-space HUD.
     this.uiCam.ignore([this.trailGfx, this.shadowGfx, this.bodyGfx, this.dyn, this.chargeText, this.ballGfx]);
-    this.cameras.main.ignore([this.vignette, this.bannerText]);
+    this.cameras.main.ignore([this.vignette, this.bannerText, this.camToast]);
 
     this.setupInput();
     this.beginKickoff('home');
@@ -455,6 +476,61 @@ export class MatchScene extends Phaser.Scene {
   // auto-clamped to the camera bounds.
   private centerCameraOnPitch(): void {
     this.cameras.main.setScroll(this.px + this.pw / 2 - GAME_W / 2, this.py + this.ph / 2 - GAME_H / 2);
+  }
+
+  // The zoom that frames the whole pitch + a stand margin for the TACTICAL view —
+  // height-bound here (the pitch is wider than tall vs the screen), so the full
+  // pitch always fits with room above/below regardless of design resolution (#176).
+  private tacticalZoom(): number {
+    return fitZoom(this.pw + 2 * TACTICAL_MARGIN, this.ph + 2 * TACTICAL_MARGIN, GAME_W, GAME_H);
+  }
+
+  // Switch the in-match camera framing (#176), bound to the number keys. Follow
+  // views (full/broadcast/tight) re-arm the broadcast follow at the view's resting
+  // zoom and persist the choice to settings.zoomLevel; TACTICAL hands off the
+  // follow and pins a static, zoomed-out overhead centred on the pitch. A no-op if
+  // the view is already active (so mashing a key doesn't restamp the toast/save),
+  // and inert during the end-of-match beats (fulltime + the penalty shootout own
+  // the camera — a mid-beat switch would fight their fixed framing).
+  private setCameraView(view: CameraView): void {
+    if (this.finished || this.state === 'fulltime' || this.state === 'pens') return;
+    if (view === this.currentView) return;
+    this.currentView = view;
+    const cam = this.cameras.main;
+    const cfg = cameraViewConfig(view, this.tacticalZoom());
+
+    if (cfg.follow) {
+      // Re-arm the broadcast follow at the new resting zoom. Restore the world
+      // bounds (TACTICAL may have widened them) and snap the live zoom so there's
+      // no lingering snap-zoom punch fighting the change.
+      cam.setBounds(0, 0, GAME_W, GAME_H);
+      this.restZoom = cfg.zoom;
+      this.zoomCur = cfg.zoom;
+      this.camFollow = true;
+      cam.setZoom(cfg.zoom);
+      const lvl = viewZoomLevel(view);
+      if (lvl) updateSettings({ zoomLevel: lvl }); // remember the framing next match
+    } else {
+      // TACTICAL: a fixed, centred overhead. Bounds == the zoomed view so the camera
+      // cannot scroll; the over-sized backdrop covers the revealed surround. (A
+      // once-per-keypress alloc — the per-frame follow uses the worldBounds field.)
+      this.camFollow = false;
+      this.zoomCur = cfg.zoom;
+      cam.setZoom(cfg.zoom);
+      const tb = tacticalBounds(this.px + this.pw / 2, this.py + this.ph / 2, GAME_W, GAME_H, cfg.zoom);
+      cam.setBounds(tb.x, tb.y, tb.w, tb.h);
+      this.centerCameraOnPitch();
+    }
+    this.showCamToast(cfg.label);
+  }
+
+  // Brief, unobtrusive camera-view label below centre. Always shown (it's direct
+  // feedback for a deliberate key press), independent of reduce-motion.
+  private showCamToast(label: string): void {
+    this.camToast.setText(label).setAlpha(1).setScale(1);
+    this.tweens.killTweensOf(this.camToast);
+    this.tweens.add({ targets: this.camToast, scale: 1.08, duration: 120, yoyo: true });
+    this.tweens.add({ targets: this.camToast, alpha: 0, delay: 750, duration: 350 });
   }
 
   // Broadcast-arc follow — runs once per real frame from renderEntities (NEVER
@@ -850,10 +926,15 @@ export class MatchScene extends Phaser.Scene {
 
   private setupInput(): void {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,L,M,I,O,SHIFT') as Record<
+    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,L,M,I,O,SHIFT,ONE,TWO,THREE,FOUR') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
+    // Camera views (#176): number keys 1-4 select the framing instantly.
+    this.keys.ONE.on('down', () => this.setCameraView('full'));
+    this.keys.TWO.on('down', () => this.setCameraView('broadcast'));
+    this.keys.THREE.on('down', () => this.setCameraView('tight'));
+    this.keys.FOUR.on('down', () => this.setCameraView('tactical'));
     // Touch: left half = joystick, right half = shoot. CRITICAL (#125): every
     // pointer handler here uses SCREEN space (p.x / p.y), never worldX/worldY — the
     // follow camera scrolls the world, but the on-screen joystick must stay anchored
