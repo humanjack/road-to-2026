@@ -292,6 +292,28 @@ export function shakeDuration(impact01: number, floor = 180, cap = 260): number 
   return floor + (cap - floor) * t;
 }
 
+/**
+ * Zoom-adaptive shake scale (#182). Phaser applies the shake offset to the camera
+ * matrix AFTER the zoom, so the on-screen displacement of a fixed shake intensity
+ * is ≈ `zoom × viewportWidth × intensity` — i.e. it grows with zoom. The shake
+ * intensities were tuned for the wide FULL-PITCH framing (zoom ≈ `refZoom`), so the
+ * zoomed-in BROADCAST/ACTION views over-shake by exactly the zoom factor (a goal
+ * that nudges at full-pitch rattles at action-cam). Scaling the intensity by
+ * `refZoom / zoom` cancels that factor, holding the on-screen amplitude CONSTANT
+ * across every view (each one feels like the already-acceptable full-pitch shake);
+ * a zoomed-out coach-cam (zoom < refZoom) is gently boosted so it doesn't vanish.
+ *
+ * `refZoom` defaults to 1.0 (1 world px ≈ 1 screen px), so this is pitch-independent
+ * and stays correct even when the full-pitch view is refit to a smaller zoom for a
+ * larger pitch. Clamped to [0, 4] so a pathological near-zero zoom can't explode the
+ * amplitude. Pure scalar, allocation-free.
+ */
+export function shakeZoomScale(zoom: number, refZoom = 1): number {
+  if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(refZoom) || refZoom <= 0) return 1;
+  const s = refZoom / zoom;
+  return s < 0 ? 0 : s > 4 ? 4 : s;
+}
+
 // --- broadcast depth: parallax + follow steadiness (#125) -------------------
 
 /**
