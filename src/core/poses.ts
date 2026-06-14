@@ -13,6 +13,16 @@
 //
 // `action: 'run'` reproduces the original inline sine swing EXACTLY (unit-tested),
 // so this refactor is behaviour-preserving for the common case.
+//
+// Pure pose helpers (composed in drawPlayer, all gated under reduceMotion):
+//   gaitPose      — run cycle (jointed legs + bob + arm swing)
+//   kickPose      — full shot: wind-up → strike → follow-through
+//   passPose      — clipped strike: a lower, shorter kick for short passes (#185)
+//   receivePose   — first-touch cushion
+//   gaitAdvance   — per-player gait phase advance by DISTANCE travelled (#185, anti-skate)
+//   accelLean     — fore/aft body lean from along-facing acceleration (#185, weight)
+//   turnPlant     — stance-widen + crouch dip intensity on a hard cut (#185, pivot tell)
+//   depthScale    — broadcast scale-for-depth
 // ---------------------------------------------------------------------------
 
 export type PoseAction = 'run' | 'kick' | 'pass' | 'slide' | 'dive' | 'celebrate' | 'receive' | 'recover';
@@ -154,8 +164,12 @@ export function passPose(t: number, out: KickPose = { legX: 0, legLift: 0, plant
 
 // --- weight, anti-skate cadence + turn plant (#185) ------------------------
 
-const GAIT_RAD_PER_PX = 0.18; // stride phase per px travelled ≈ old 36rad/s at ~200px/s
-const DRIBBLE_CADENCE = 1.25; // close control = a choppier, higher-cadence stride
+// stride phase (rad) per px travelled. Calibrated to the old fixed-clock cadence:
+// the previous gait ran at RUN_BASE_FREQ·2 = 36 rad/s and looked right at ~200 px/s,
+// so 36 / 200 = 0.18 rad/px reproduces that stride length, now tied to distance.
+// Lower → longer strides (feet turn over slower per px); higher → choppier.
+const GAIT_RAD_PER_PX = 0.18;
+const DRIBBLE_CADENCE = 1.25; // ball carrier: +25% phase per px → shorter, choppier close-control strides
 
 /**
  * Per-player run-cycle phase advance for THIS frame, driven by DISTANCE travelled
@@ -197,7 +211,10 @@ export function turnPlant(vx: number, vy: number, faceX: number, faceY: number, 
   const fl = Math.hypot(faceX, faceY);
   if (!(fl > 0)) return 0;
   const dot = (vx * faceX + vy * faceY) / (sp * fl); // cos angle, +1 aligned … −1 opposed
-  const diverge = clamp01((1 - dot) * 0.7); // 0 when aligned, grows as facing veers off travel
+  // (1-dot) is 0 (aligned) … 2 (reversed); ×0.7 maps a ~90° cut (dot 0 → 0.7) most of
+  // the way to full and a full reverse (dot −1 → 1.4, clamped) to max — so only real
+  // cuts plant hard, gentle curves barely register.
+  const diverge = clamp01((1 - dot) * 0.7);
   const spF = clamp01((sp - minSpeed) / (fullSpeed - minSpeed));
   return diverge * spF;
 }
