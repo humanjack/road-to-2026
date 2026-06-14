@@ -12,6 +12,9 @@ import {
   resolveBump,
   postBounce,
   rippleAmplitude,
+  loftLaunch,
+  segmentBlocked,
+  LOFT_GRAVITY,
   stepStamina,
   carryOffset,
   easeCarryAngle,
@@ -150,6 +153,7 @@ const KICKOFF_HOLD = 0.6; // sim seconds of the kick-off set piece before play
 const GOAL_SKIP_AFTER = 0.5; // earliest the user may skip the cosmetic celebration tail
 const PEN_KICK_CADENCE = 0.95; // sim seconds per penalty-kick reveal (#142)
 const PEN_KICK_CADENCE_RM = 0.6; // reduce-motion: snappier (no flourish to hold)
+const CHIP_CHARGE = 0.18; // a shot released below this charge chips (lofts) instead (#132)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -174,7 +178,7 @@ export class MatchScene extends Phaser.Scene {
   private goalH = 168;
 
   private players: Player[] = [];
-  private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1, curve: 0 };
+  private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1, curve: 0, z: 0, vz: 0, grounded: true };
   private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
   private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
   private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
@@ -919,6 +923,9 @@ export class MatchScene extends Phaser.Scene {
     this.ball.vy = 0;
     this.ball.ownerIdx = -1;
     this.ball.curve = 0; // clear any curve on a kickoff / post-goal reset (#133)
+    this.ball.z = 0;
+    this.ball.vz = 0;
+    this.ball.grounded = true;
     this.inputBuf = null; // a stalled action must not survive a kickoff/goal reset
     this.charging = false;
     // nudge a kicking-side player onto the ball
@@ -1285,6 +1292,7 @@ export class MatchScene extends Phaser.Scene {
     const vy = (ay / len) * power;
     this.registerShot(p.side, p.x, p.y, vx, vy); // straight launch → on-target heuristic unchanged
     this.kickBall(p, vx, vy); // resets ball.curve to 0
+    if (charge < CHIP_CHARGE) this.loftBall(170); // a light tap chips the shot up + over a keeper (#132)
     if (rel.sweet) {
       // curl the free ball toward the aim's lateral side; treat as a firework
       const aySign = ay === 0 ? 1 : Math.sign(ay);
@@ -1397,7 +1405,12 @@ export class MatchScene extends Phaser.Scene {
     const dy = ty - p.y;
     const len = Math.hypot(dx, dy) || 1;
     const power = Math.min(720, 360 + len * 1.5); // driven, with extra pace to beat the line
+    // lofted variant (#132): if a defender sits in the passing lane, lift it over them
+    const blocked = this.players.some(
+      (q) => q.side !== p.side && q.role !== 'GK' && segmentBlocked(p.x, p.y, tx, ty, q.x, q.y, PR + 8),
+    );
     this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    if (blocked) this.loftBall(len);
     this.setActive(targetIdx);
     return true;
   }
@@ -1434,11 +1447,23 @@ export class MatchScene extends Phaser.Scene {
     if (done) this.inputBuf = null;
   }
 
+  // Loft the just-kicked ball: set vz so it arcs and lands ~at the lead point (#132).
+  private loftBall(dist: number): void {
+    const speed = Math.hypot(this.ball.vx, this.ball.vy) || 1;
+    const l = loftLaunch(dist, speed);
+    this.ball.vz = l.vz;
+    this.ball.z = 0;
+    this.ball.grounded = false;
+  }
+
   private kickBall(from: Player, vx: number, vy: number): void {
     this.ball.vx = vx;
     this.ball.vy = vy;
     this.ball.ownerIdx = -1;
     this.ball.curve = 0; // a fresh kick / pass has no curve until fireShot sets it (#133)
+    this.ball.z = 0; // grounded by default; doThroughBall / fireShot may loft it after (#132)
+    this.ball.vz = 0;
+    this.ball.grounded = true;
     // place just ahead so we don't immediately re-collect
     const len = Math.hypot(vx, vy) || 1;
     this.ball.x = from.x + (vx / len) * (PR + BR + 2);
@@ -1628,6 +1653,7 @@ export class MatchScene extends Phaser.Scene {
   // difficulty-scaled so corner shots beat it but tame efforts don't.
   private resolveKeeperSaves(): void {
     if (this.ball.ownerIdx >= 0) return;
+    if (!this.ball.grounded) return; // a lofted ball clears a ground keeper (#132)
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
     if (speed < 220) return; // only shots/driven balls trigger a diving save
     for (let i = 0; i < this.players.length; i++) {
@@ -1649,6 +1675,9 @@ export class MatchScene extends Phaser.Scene {
         this.ball.vx = 0;
         this.ball.vy = 0;
         this.ball.curve = 0; // a caught ball has no curve (#133)
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.grounded = true;
         this.ballCarryAng = Math.atan2(k.faceY, k.faceX);
         k.ballHold = 0;
         audio.play('save');
@@ -1658,6 +1687,9 @@ export class MatchScene extends Phaser.Scene {
         this.ball.vx = away * Math.max(260, Math.abs(this.ball.vx) * 0.6);
         this.ball.vy = (this.ball.y - k.y) * 4 + this.rng.range(-60, 60);
         this.ball.curve = 0; // a parry kills the curve — the rebound flies straight (#133)
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.grounded = true;
         this.lastKickIdx = i;
         this.kickCooldown = 0.1;
         audio.play('save');
@@ -1850,12 +1882,15 @@ export class MatchScene extends Phaser.Scene {
           owner = i;
         }
       });
-      if (owner >= 0) {
+      if (owner >= 0 && this.ball.grounded) {
         const collectSpeed = Math.hypot(this.ball.vx, this.ball.vy); // pre-collect (for the touch fx)
         this.ball.ownerIdx = owner;
         this.ball.vx = 0;
         this.ball.vy = 0;
         this.ball.curve = 0; // collecting kills any in-flight curve (#133)
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.grounded = true;
         // First touch: cushion the ball toward the receiver's facing (which, for
         // the user, is their held movement direction) so a received pass settles
         // under control instead of snapping from a stale carry angle.
@@ -1903,6 +1938,17 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vx = cs.vx;
       this.ball.vy = cs.vy;
       this.ball.curve = cs.curve;
+    }
+    // vertical loft integration (#132): an airborne ball arcs over ground play and
+    // lands (z→0) at the lead point; per fixed step from ball state → deterministic.
+    if (!this.ball.grounded) {
+      this.ball.z += this.ball.vz * dt;
+      this.ball.vz -= LOFT_GRAVITY * dt;
+      if (this.ball.z <= 0) {
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.grounded = true;
+      }
     }
 
     // top/bottom walls
@@ -2208,7 +2254,9 @@ export class MatchScene extends Phaser.Scene {
     order.sort((a, b) => a.y - b.y);
     for (let i = 0; i < order.length; i++) this.drawPlayer(order[i], runT);
 
-    this.ballGfx.setPosition(this.ball.x, this.ball.y);
+    const bz = this.ball.z;
+    this.ballGfx.setPosition(this.ball.x, this.ball.y - bz); // lifted by height when airborne (#132)
+    this.ballGfx.setScale(1 + bz * 0.004); // grows slightly when high
 
     // ball trail (afterimages) when the ball is loose and moving quickly
     this.trailGfx.clear();
@@ -2224,6 +2272,13 @@ export class MatchScene extends Phaser.Scene {
       this.trailGfx.fillStyle(this.ballTint, a);
       this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + (i / this.ballTrail.length) * 0.6));
     });
+    // airborne ball shadow on the pitch at the true ground point (#132): the cue the
+    // ball is lofted (unreachable by ground players). Renders under reduceMotion too.
+    if (this.ball.z > 1) {
+      const shrink = Math.max(0.35, 1 - this.ball.z * 0.0022);
+      this.trailGfx.fillStyle(C.deep, 0.32);
+      this.trailGfx.fillEllipse(this.ball.x, this.ball.y, BR * 2.2 * shrink, BR * 1.4 * shrink);
+    }
 
     // Surge vignette — screen edges glow in the surging team's colour
     this.vignette.clear();

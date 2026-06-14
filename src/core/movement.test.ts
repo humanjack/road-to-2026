@@ -44,6 +44,9 @@ import {
   type BumpResult,
   postBounce,
   rippleAmplitude,
+  loftLaunch,
+  segmentBlocked,
+  LOFT_GRAVITY,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -735,6 +738,63 @@ describe('rippleAmplitude (#135)', () => {
 
   it('is 0 for a negative age', () => {
     expect(rippleAmplitude(-1)).toBe(0);
+  });
+});
+
+describe('loftLaunch (#132)', () => {
+  it('returns a positive vz and a hang time clamped to a readable arc', () => {
+    const l = loftLaunch(300, 500);
+    expect(l.vz).toBeGreaterThan(0);
+    expect(l.hangTime).toBeGreaterThanOrEqual(0.45);
+    expect(l.hangTime).toBeLessThanOrEqual(1.1);
+  });
+
+  it('the integrated height returns to ~0 right around the predicted hang time', () => {
+    const l = loftLaunch(400, 500);
+    let z = 0;
+    let vz = l.vz;
+    const dt = 1 / 60;
+    let landed = -1;
+    for (let i = 0; i < 200; i++) {
+      z += vz * dt;
+      vz -= LOFT_GRAVITY * dt;
+      if (z <= 0 && i > 0) {
+        landed = (i + 1) * dt;
+        break;
+      }
+    }
+    expect(landed).toBeGreaterThan(0);
+    expect(Math.abs(landed - l.hangTime)).toBeLessThan(0.05); // lands ~ at hang time
+  });
+
+  it('peak height is positive and bounded', () => {
+    const l = loftLaunch(600, 400);
+    const peak = (l.vz * l.vz) / (2 * LOFT_GRAVITY);
+    expect(peak).toBeGreaterThan(5);
+    expect(peak).toBeLessThan(200);
+  });
+
+  it('is deterministic for identical inputs', () => {
+    expect(loftLaunch(250, 480)).toEqual(loftLaunch(250, 480));
+  });
+});
+
+describe('segmentBlocked (#132)', () => {
+  it('detects a defender sitting in the middle of the passing lane', () => {
+    expect(segmentBlocked(0, 0, 200, 0, 100, 5, 15)).toBe(true); // on the line, mid
+  });
+
+  it('ignores a player off to the side of the lane', () => {
+    expect(segmentBlocked(0, 0, 200, 0, 100, 60, 15)).toBe(false);
+  });
+
+  it('ignores a player at the carrier or at the target (not between)', () => {
+    expect(segmentBlocked(0, 0, 200, 0, 2, 0, 15)).toBe(false); // at the carrier
+    expect(segmentBlocked(0, 0, 200, 0, 199, 0, 15)).toBe(false); // at the target
+  });
+
+  it('handles a degenerate (zero-length) lane', () => {
+    expect(segmentBlocked(50, 50, 50, 50, 50, 50, 15)).toBe(false);
   });
 });
 
