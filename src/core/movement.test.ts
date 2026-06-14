@@ -40,6 +40,8 @@ import {
   type CurveState,
   turnSharpness,
   turnBleed,
+  resolveBump,
+  type BumpResult,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -621,6 +623,66 @@ describe('turnSharpness / turnBleed (#129)', () => {
 
   it('is deterministic for identical inputs', () => {
     expect(turnBleed(150, 40, -1, 0.2)).toBe(turnBleed(150, 40, -1, 0.2));
+  });
+});
+
+describe('resolveBump (#130)', () => {
+  const CAP = 300;
+
+  it('a fast body into a stationary one slows the runner and knocks the target along the normal', () => {
+    const r = resolveBump(200, 0, 0, 0, 1, 0, 0.4, CAP);
+    expect(r.ax).toBeCloseTo(120, 5); // runner slows (200 - 80)
+    expect(r.bx).toBeCloseTo(80, 5); // target knocked (+80)
+    expect(r.ay).toBe(0);
+    expect(r.by).toBe(0);
+  });
+
+  it('conserves momentum along the normal (equal mass: a loses what b gains)', () => {
+    const r = resolveBump(200, 0, 0, 0, 1, 0, 0.4, CAP);
+    expect(r.ax + r.bx).toBeCloseTo(200, 5); // total normal momentum unchanged
+  });
+
+  it('a head-on equal-and-opposite pair returns mirrored, damped velocities', () => {
+    const r = resolveBump(200, 0, -200, 0, 1, 0, 0.4, CAP);
+    expect(r.ax).toBeCloseTo(40, 5); // 200 - 160
+    expect(r.bx).toBeCloseTo(-40, 5); // mirror
+  });
+
+  it('a near-tangential / separating contact transfers nothing', () => {
+    const tangential = resolveBump(200, 0, 0, 0, 0, 1, 0.4, CAP); // velocity ⟂ normal
+    expect(tangential.ax).toBe(200);
+    expect(tangential.bx).toBe(0);
+    const separating = resolveBump(-100, 0, 100, 0, 1, 0, 0.4, CAP); // moving apart
+    expect(separating.ax).toBe(-100);
+    expect(separating.bx).toBe(100);
+  });
+
+  it('never returns a speed above the cap', () => {
+    const r = resolveBump(900, 200, -50, 0, 1, 0, 0.9, CAP);
+    expect(Math.hypot(r.ax, r.ay)).toBeLessThanOrEqual(CAP + 1e-6);
+    expect(Math.hypot(r.bx, r.by)).toBeLessThanOrEqual(CAP + 1e-6);
+  });
+
+  it('a repeated pile-up contact converges (closing speed shrinks, never explodes)', () => {
+    let avx = 250;
+    let bvx = 0;
+    const out: BumpResult = { ax: 0, ay: 0, bx: 0, by: 0 };
+    let prevClosing = avx - bvx;
+    for (let i = 0; i < 20; i++) {
+      resolveBump(avx, 0, bvx, 0, 1, 0, 0.4, CAP, out);
+      avx = out.ax;
+      bvx = out.bx;
+      const closing = avx - bvx;
+      expect(closing).toBeLessThanOrEqual(prevClosing + 1e-6); // monotonically settling
+      prevClosing = closing;
+    }
+    expect(prevClosing).toBeGreaterThanOrEqual(0); // never reverses into an explosion
+  });
+
+  it('writes into the supplied scratch object (no allocation)', () => {
+    const out: BumpResult = { ax: 0, ay: 0, bx: 0, by: 0 };
+    const r = resolveBump(200, 0, 0, 0, 1, 0, 0.4, CAP, out);
+    expect(r).toBe(out);
   });
 });
 

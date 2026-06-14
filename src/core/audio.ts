@@ -5,7 +5,7 @@
 
 import { getSave, updateSettings } from './save';
 
-type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint' | 'whiff';
+type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint' | 'whiff' | 'bump';
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -179,6 +179,11 @@ class AudioManager {
       case 'whiff':
         // dry scuff of a committed slide hitting nothing (#134)
         this.noise(0.1, 0.07, 'highpass', 1500);
+        break;
+      case 'bump':
+        // soft body-to-body thud — duller + lighter than the tackle crunch (#130)
+        this.tone(130, 0.07, 'sine', 0.16, 80);
+        this.noise(0.05, 0.07, 'lowpass', 420);
         break;
       case 'goal':
         [0, 4, 7, 12].forEach((semi, i) => {

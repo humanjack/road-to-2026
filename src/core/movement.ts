@@ -124,6 +124,66 @@ export function turnBleed(curVx: number, curVy: number, desVx: number, desVy: nu
   return Math.max(floor, 1 - bleed * sharp);
 }
 
+// --- body collision (shoulder-barge) ---------------------------------------
+//
+// Two bodies meeting at speed should exchange momentum, not silently squeeze
+// apart. Along the contact normal (a → b), a partial equal-mass exchange slows
+// the faster body and knocks the slower one along the normal. `transfer` (0..1)
+// scales the exchange (inelastic < 1); both outputs are clamped to `cap` so a
+// pile-up settles instead of exploding. Pure + allocation-free.
+
+export interface BumpResult {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+}
+
+export function resolveBump(
+  avx: number,
+  avy: number,
+  bvx: number,
+  bvy: number,
+  nx: number,
+  ny: number,
+  transfer: number,
+  cap: number,
+  out: BumpResult = { ax: 0, ay: 0, bx: 0, by: 0 },
+): BumpResult {
+  let ax = avx;
+  let ay = avy;
+  let bx = bvx;
+  let by = bvy;
+  const an = avx * nx + avy * ny; // a's velocity along the normal (a → b)
+  const bn = bvx * nx + bvy * ny;
+  const closing = an - bn; // > 0 ⇒ approaching along the normal
+  if (closing > 0) {
+    const j = closing * Math.min(1, Math.max(0, transfer)); // exchanged along the normal
+    ax = avx - nx * j; // faster body slows along the normal
+    ay = avy - ny * j;
+    bx = bvx + nx * j; // slower body is knocked along the normal
+    by = bvy + ny * j;
+  }
+  // clamp both results to the cap so repeated contacts can't blow up
+  const as = Math.hypot(ax, ay);
+  if (as > cap && as > 0) {
+    const k = cap / as;
+    ax *= k;
+    ay *= k;
+  }
+  const bs = Math.hypot(bx, by);
+  if (bs > cap && bs > 0) {
+    const k = cap / bs;
+    bx *= k;
+    by *= k;
+  }
+  out.ax = ax;
+  out.ay = ay;
+  out.bx = bx;
+  out.by = by;
+  return out;
+}
+
 // --- sprint & stamina ------------------------------------------------------
 //
 // Sprint is a managed burst, not a free always-on button. While sprinting the
