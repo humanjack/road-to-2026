@@ -319,6 +319,7 @@ export class MatchScene extends Phaser.Scene {
   private runPhaseAway = 0;
   private bumpCd = 0; // body-bump sfx/fx rate-limit
   private renderOrder: Player[] = []; // reused y-sort scratch for the draw pass
+  private playerLabels: Phaser.GameObjects.Text[] = []; // pooled number+role nameplates (#190), one per player
   private activeIdx = -1;
 
   private homeGoals = 0;
@@ -483,6 +484,7 @@ export class MatchScene extends Phaser.Scene {
     this.drawPitch();
     this.buildHud();
     this.spawnPlayers();
+    this.buildPlayerLabels();
     const settings = getSave().settings;
     this.reduceMotion = settings.reduceMotion;
     this.slowMoOn = settings.slowMo;
@@ -953,6 +955,56 @@ export class MatchScene extends Phaser.Scene {
       const hy = this.py + f.fy * this.ph;
       this.players.push(this.makePlayer('away', f.role, hx, hy, homeForm.length + i));
     });
+  }
+
+  // Build one pooled nameplate per player (#190, Pixel-Cup reference): a small
+  // number + role tag, drawn ONCE here, then only re-positioned/tinted per frame
+  // (no string churn). Number is per-side 1..11 (GK 1, then back→front). World-layer
+  // so it scrolls/zooms with the figure; depth just over the body, below the dyn HUD.
+  private buildPlayerLabels(): void {
+    const num: Record<Side, number> = { home: 0, away: 0 };
+    for (const p of this.players) {
+      num[p.side] += 1;
+      const t = this.onWorld(
+        this.add.text(p.x, p.y, `${num[p.side]} ${p.role}`, {
+          fontFamily: FONT_DISPLAY,
+          fontSize: '13px',
+          color: CSS.white,
+        }),
+      )
+        .setOrigin(0.5, 0)
+        .setDepth(11);
+      this.playerLabels.push(t);
+    }
+  }
+
+  // Per-frame nameplate update (#190): position under the feet (depth-scaled), the
+  // user/active player bright gold, own side dim, opponents dimmer. Hidden when the
+  // camera is zoomed out (FULL/TACTICAL) where 22 labels would be noise. Allocation-
+  // free — only property sets, no text rebuild.
+  private updatePlayerLabels(): void {
+    const labelsOn = this.cameras.main.zoom >= 0.9; // shown in BROADCAST/ACTION, hidden when wide
+    const userSide = this.activeIdx >= 0 && this.players[this.activeIdx] ? this.players[this.activeIdx].side : 'home';
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      const lab = this.playerLabels[i];
+      if (!lab) continue;
+      if (!labelsOn || !Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+        lab.visible = false;
+        continue;
+      }
+      const ds = depthScale(p.y, this.py, this.ph);
+      lab.visible = true;
+      lab.setPosition(p.x, p.y + 9 * ds);
+      lab.setScale(ds);
+      if (p.isUser) {
+        lab.setTint(0xffc53d); // gold — matches the active chevron/ring
+        lab.setAlpha(1);
+      } else {
+        lab.clearTint();
+        lab.setAlpha(p.side === userSide ? 0.5 : 0.34);
+      }
+    }
   }
 
   private makePlayer(side: Side, role: Role, hx: number, hy: number, idx: number): Player {
@@ -2719,6 +2771,7 @@ export class MatchScene extends Phaser.Scene {
       this.dyn.fillTriangle(ap.x - 7 * ds, headTop - 17 * ds, ap.x + 7 * ds, headTop - 17 * ds, ap.x, headTop - 5 * ds);
       this.drawStaminaNub(ap);
     }
+    this.updatePlayerLabels(); // number+role nameplates (#190)
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
 
     this.updateCamera(); // broadcast-arc follow (per-frame, reads sim output only)
