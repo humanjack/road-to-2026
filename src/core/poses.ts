@@ -15,95 +15,116 @@
 // so this refactor is behaviour-preserving for the common case.
 // ---------------------------------------------------------------------------
 
-export type PoseAction = 'run' | 'kick' | 'slide' | 'dive' | 'celebrate';
-
-export interface LimbPose {
-  farLeg: number; // fore/aft limb offsets in px (forward = +)
-  nearLeg: number;
-  farArm: number;
-  nearArm: number;
-  lean: number; // torso/figure forward shift along facing (px)
-  crouch: number; // figure width scale (1 = upright; < 1 = laid-low / dive)
-}
+export type PoseAction = 'run' | 'kick' | 'slide' | 'dive' | 'celebrate' | 'receive' | 'recover';
 
 function clamp01(t: number): number {
   if (!Number.isFinite(t)) return 0;
   return t < 0 ? 0 : t > 1 ? 1 : t;
 }
 
-/**
- * Limb offsets for an action. `t` is the run clock for 'run' (continuous) or a
- * 0..1 progress for the timed poses; `gait` (0..1) scales only the run swing;
- * `phase` desyncs the run cycle; `pr` is the player radius (offsets scale with the
- * body). Writes into `out` — allocation-free. The 'run' branch is the EXACT
- * original formula `sin(t*2 + phase) * 0.5 * gait * pr`.
- */
-export function limbPose(
-  action: PoseAction,
-  t: number,
-  gait: number,
+/** Cubic ease-out (1 at u=1, fast then settling) — used to shape the kick sweep. */
+function easeOut(u: number): number {
+  const c = clamp01(u);
+  const inv = 1 - c;
+  return 1 - inv * inv * inv;
+}
+
+// --- run gait (#anim) -------------------------------------------------------
+//
+// A jointed run cycle, replacing the old straight-stick scissor: legs stride
+// contralaterally AND bend at the knee through the recovery swing, the body
+// bobs twice per stride (one bounce per footfall), and the arms swing opposite
+// the legs. Everything is returned as a fraction of the player radius (the
+// caller multiplies by U) and scaled by `gait` (0 = stand still, 1 = full
+// sprint cadence), so a stationary player is perfectly still. Pure, allocation-
+// free (writes `out`). `phase` is the continuous run clock (already desynced per
+// player); the swing is `sin(phase)`.
+
+export interface GaitPose {
+  backLegX: number; // fore/aft offset of the back foot (× U)
+  frontLegX: number;
+  backFootLift: number; // how far the back foot lifts off the turf (× U, ≥ 0)
+  frontFootLift: number;
+  backKnee: number; // 0..1 knee flex of the back leg (the lifting/recovering leg bends most)
+  frontKnee: number;
+  bob: number; // vertical body bounce (× U, ≥ 0) — two bounces per stride
+  armX: number; // near-arm fore/aft swing (× U); the far arm swings −armX (contralateral)
+}
+
+export function gaitPose(
   phase: number,
-  pr: number,
-  out: LimbPose = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 },
-): LimbPose {
-  // recover from any non-finite input rather than poisoning the batched Graphics
-  if (!Number.isFinite(t)) t = 0;
-  if (!Number.isFinite(gait)) gait = 0;
-  if (!Number.isFinite(phase)) phase = 0;
-  if (!Number.isFinite(pr)) pr = 0;
-  let fl = 0;
-  let nl = 0;
-  let fa = 0;
-  let na = 0;
-  let lean = 0;
-  let crouch = 1;
+  gait: number,
+  out: GaitPose = { backLegX: 0, frontLegX: 0, backFootLift: 0, frontFootLift: 0, backKnee: 0, frontKnee: 0, bob: 0, armX: 0 },
+): GaitPose {
+  const ph = Number.isFinite(phase) ? phase : 0;
+  const g = !Number.isFinite(gait) ? 0 : gait < 0 ? 0 : gait > 1 ? 1 : gait;
+  const s = Math.sin(ph); // +1 = back leg fully forward, −1 = front leg fully forward
+  out.backLegX = s * 0.45 * g;
+  out.frontLegX = -s * 0.45 * g;
+  // a leg lifts (and bends) on its forward recovery swing
+  out.backFootLift = Math.max(0, s) * 0.5 * g;
+  out.frontFootLift = Math.max(0, -s) * 0.5 * g;
+  out.backKnee = Math.max(0, s) * g;
+  out.frontKnee = Math.max(0, -s) * g;
+  out.bob = (0.5 - 0.5 * Math.cos(2 * ph)) * 0.18 * g; // sin²(phase): 0 at footplant, peak mid-swing, ≥ 0
+  out.armX = -s * 0.4 * g; // arms counter the legs
+  return out;
+}
 
-  if (action === 'run') {
-    const sw = Math.sin(t * 2 + phase) * 0.5 * gait * pr; // identical to the old inline swing
-    fl = sw;
-    nl = -sw;
-    fa = -sw;
-    na = sw;
-  } else if (action === 'kick') {
-    // striking (far) leg sweeps monotonically from back to a forward extension; the
-    // body leans into the follow-through. A wind-up read without breaking monotonicity.
-    const p = clamp01(t);
-    fl = (-0.35 + 1.25 * p) * pr; // back → extended forward
-    nl = (0.1 - 0.3 * p) * pr; // plant leg
-    fa = 0.2 * pr; // arms steady-ish for balance
-    na = -0.2 * pr;
-    lean = 0.3 * p * pr;
-  } else if (action === 'slide') {
-    // both legs thrown forward along the lunge, body low + leaning into it
-    fl = 0.85 * pr;
-    nl = 0.7 * pr;
-    fa = -0.3 * pr;
-    na = -0.3 * pr;
-    lean = 0.5 * pr;
-    crouch = 0.74;
-  } else if (action === 'dive') {
-    // keeper throws both arms forward toward the ball line; legs trail, body low
-    fa = 0.9 * pr;
-    na = 0.9 * pr;
-    fl = -0.4 * pr;
-    nl = -0.4 * pr;
-    lean = 0.3 * pr;
-    crouch = 0.88;
-  } else if (action === 'celebrate') {
-    // arms thrown up/forward, legs together — paired with a vertical hop in drawPlayer
-    fa = 0.85 * pr;
-    na = 0.85 * pr;
-    fl = -0.15 * pr;
-    nl = 0.15 * pr;
-    lean = 0.1 * pr;
+// --- kick: wind-up → strike → follow-through (#anim) ------------------------
+//
+// A real kicking motion instead of a single forward poke: the striking leg
+// coils BACK during the first ~30% (the wind-up), sweeps through the ball with
+// an ease-out (the strike), and finishes high and forward (the follow-through),
+// while the body leans in and the opposite arm counter-swings for balance.
+// `t` is the 0..1 pose progress. Returns × U fractions; pure, writes `out`.
+
+export interface KickPose {
+  legX: number; // striking-leg fore/aft: back (−) on wind-up → forward (+) on follow-through (× U)
+  legLift: number; // striking-foot lift, peaks through the strike (× U, ≥ 0)
+  plantKnee: number; // 0..1 plant-leg knee flex (absorbs the strike)
+  lean: number; // torso forward lean into the follow-through (× U)
+  armX: number; // counter-balancing near-arm swing (× U)
+  contact: number; // 0..1 spike at the instant the foot passes the ball line
+}
+
+export function kickPose(
+  t: number,
+  out: KickPose = { legX: 0, legLift: 0, plantKnee: 0, lean: 0, armX: 0, contact: 0 },
+): KickPose {
+  const p = clamp01(t);
+  let leg: number;
+  if (p < 0.3) {
+    leg = -(p / 0.3) * 0.5; // wind the leg back (0 → −0.5)
+  } else {
+    leg = -0.5 + easeOut((p - 0.3) / 0.7) * 1.55; // sweep through to a forward follow-through (→ +1.05)
   }
+  out.legX = leg;
+  out.legLift = Math.max(0, leg) * 0.9; // foot rises as it swings forward
+  // plant leg bends in to absorb, then straightens on the follow-through
+  out.plantKnee = p < 0.2 ? (p / 0.2) * 0.3 : 0.3 * (1 - clamp01((p - 0.6) / 0.4));
+  out.lean = easeOut(p) * 0.35;
+  out.armX = -leg * 0.5;
+  out.contact = Math.max(0, 1 - Math.abs(p - 0.45) / 0.15); // contact window ≈ t∈[0.30,0.60]
+  return out;
+}
 
-  out.farLeg = fl;
-  out.nearLeg = nl;
-  out.farArm = fa;
-  out.nearArm = na;
-  out.lean = lean;
-  out.crouch = crouch;
+// --- first-touch receive cushion (#anim) -----------------------------------
+//
+// A short settle when a moving ball is brought under control: the body dips and
+// leans back a touch to cushion it, the lead foot reaches to meet it, then it
+// recovers to a neutral stance. `t` is 0 (the instant of the touch) → 1 (settled).
+export interface ReceivePose {
+  crouch: number; // figure height scale (< 1 = dipped to cushion)
+  reach: number; // lead-foot reach toward the ball (× U)
+  lean: number; // slight backward lean to absorb (× U, ≤ 0)
+}
+
+export function receivePose(t: number, out: ReceivePose = { crouch: 1, reach: 0, lean: 0 }): ReceivePose {
+  const settle = 1 - clamp01(t); // 1 at the touch, 0 once settled
+  out.crouch = 1 - settle * 0.14;
+  out.reach = settle * 0.4;
+  out.lean = -settle * 0.1;
   return out;
 }
 
@@ -114,9 +135,13 @@ export interface PoseSelection {
 
 /**
  * Pick the active pose from a player's deterministic sim-ticked countdowns, in
- * priority order: celebrate > dive > slide > kick > run. `t` is the pose's 0..1
- * progress (so the limb sweep advances as the countdown drains). For 'run' the
- * caller supplies the continuous run clock instead.
+ * priority order: celebrate > dive > slide > recover > kick > receive > run.
+ * `t` is the pose's 0..1 progress (so the sweep advances as the countdown
+ * drains). For 'run' the caller supplies the continuous run clock instead.
+ *
+ * `recover` (grounded-and-rising after a whiffed slide) is now its own action,
+ * distinct from an active `slide` lunge, so the figure can animate back to its
+ * feet instead of staying face-down.
  */
 export function selectPose(
   kickT: number,
@@ -124,14 +149,19 @@ export function selectPose(
   slideT: number,
   recovery: number,
   celebrateT: number,
+  receiveT = 0,
   kickDur = 0.28,
   diveDur = 0.45,
   slideDur = 0.4,
+  recoverDur = 0.5,
+  receiveDur = 0.32,
 ): PoseSelection {
   if (celebrateT > 0) return { action: 'celebrate', t: 0 };
   if (diveT > 0) return { action: 'dive', t: clamp01(1 - diveT / diveDur) };
-  if (slideT > 0 || recovery > 0) return { action: 'slide', t: 0 };
+  if (slideT > 0) return { action: 'slide', t: clamp01(1 - slideT / slideDur) };
+  if (recovery > 0) return { action: 'recover', t: clamp01(1 - recovery / recoverDur) };
   if (kickT > 0) return { action: 'kick', t: clamp01(1 - kickT / kickDur) };
+  if (receiveT > 0) return { action: 'receive', t: clamp01(1 - receiveT / receiveDur) };
   return { action: 'run', t: 0 };
 }
 

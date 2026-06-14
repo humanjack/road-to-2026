@@ -63,7 +63,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
-import { limbPose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
+import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
 import {
   cameraTarget,
   followStep,
@@ -139,6 +139,7 @@ interface Player {
   diveT: number; // keeper dive
   slideT: number; // committed slide
   celebrateT: number; // goal celebration
+  receiveT: number; // first-touch cushion when settling a moving ball (#anim)
   leanAng: number; // cosmetic body-lean into a hard cut (#129), eased in the render
   kickPop: number; // sim-ticked power-scaled kick impulse for squash-stretch (#131)
   pvx: number; // render-only prev velocity (for the along-facing accel that drives #131)
@@ -230,7 +231,10 @@ export class MatchScene extends Phaser.Scene {
   private ballCarryAng = 0; // smoothed carry direction so hard turns drag the ball (a touch)
   private vScratch = { x: 0, y: 0 }; // reused output for approachVelocity (no per-call alloc)
   private curveScratch = { vx: 0, vy: 0, curve: 0 }; // reused output for stepCurve (#133)
-  private poseScratch = { farLeg: 0, nearLeg: 0, farArm: 0, nearArm: 0, lean: 0, crouch: 1 }; // reused for limbPose (#137)
+  // reused pose outputs (#anim) — one of each, the draw loop runs players sequentially
+  private gaitScratch = { backLegX: 0, frontLegX: 0, backFootLift: 0, frontFootLift: 0, backKnee: 0, frontKnee: 0, bob: 0, armX: 0 };
+  private kickScratch = { legX: 0, legLift: 0, plantKnee: 0, lean: 0, armX: 0, contact: 0 };
+  private recvScratch = { crouch: 1, reach: 0, lean: 0 };
   private bumpScratch = { ax: 0, ay: 0, bx: 0, by: 0 }; // reused output for resolveBump (#130)
   private squashScratch = { sx: 1, sy: 1 }; // reused output for squashStretch (#131)
   // Surge-reactive run cadence (#138): per-side factor + run-cycle phase, advanced
@@ -914,6 +918,7 @@ export class MatchScene extends Phaser.Scene {
       diveT: 0,
       slideT: 0,
       celebrateT: 0,
+      receiveT: 0,
       leanAng: 0,
       kickPop: 0,
       pvx: 0,
@@ -1101,6 +1106,7 @@ export class MatchScene extends Phaser.Scene {
       p.diveT = 0;
       p.slideT = 0;
       p.celebrateT = 0;
+      p.receiveT = 0;
       p.kickPop = 0; // clear any residual kick stretch (#131)
     }
     this.ball.x = this.px + this.pw / 2;
@@ -2019,6 +2025,7 @@ export class MatchScene extends Phaser.Scene {
       if (p.diveT > 0) p.diveT = Math.max(0, p.diveT - dt);
       if (p.slideT > 0) p.slideT = Math.max(0, p.slideT - dt);
       if (p.celebrateT > 0) p.celebrateT = Math.max(0, p.celebrateT - dt);
+      if (p.receiveT > 0) p.receiveT = Math.max(0, p.receiveT - dt);
       if (p.kickPop > 0) p.kickPop = Math.max(0, p.kickPop - dt * 5); // springs back in ~0.2s (#131)
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -2112,7 +2119,9 @@ export class MatchScene extends Phaser.Scene {
         this.ballCarryAng = Math.atan2(o.faceY, o.faceX);
         // mark reception time on the controlled player (one-touch window ref, #96)
         if (owner === this.activeIdx) this.lastReceiveAt = this.time.now;
-        // clean first-touch spark when settling a moving ball (readability of #93)
+        // first-touch cushion pose for any paced incoming ball (#anim)
+        if (collectSpeed > 120) o.receiveT = 0.32;
+        // clean first-touch spark when settling a fast ball (readability of #93)
         if (collectSpeed > 170) this.fxSpark(this.ball.x, this.ball.y, o.side === 'home' ? this.homeColor : this.awayColor);
       }
     } else {
@@ -2623,11 +2632,14 @@ export class MatchScene extends Phaser.Scene {
 
   // An upright "billboard" footballer (broadcast tilt): the figure STANDS at its
   // feet (the sim ground point p.x,p.y) and rises up-screen, so the angled view
-  // shows the player's body and face — not the top of the head. Facing is a
-  // left/right mirror + a front/back head + a lean into lateral travel; the gait
-  // strides the legs and swings the arms contralaterally. Poses (kick/slide/dive/
-  // celebrate) reshape the same figure. Render-only — reads sim output, mutates no
-  // sim state. Everything is in units of PR so the figure scales with depthScale.
+  // shows the player's body and face — not the top of the head. The run cycle is
+  // a JOINTED gait (#anim): legs stride contralaterally AND bend at the knee, the
+  // body bobs once per footfall, the arms swing opposite the legs, and a burst /
+  // hard-stop squash-stretches the whole figure (the #131/#144 accel tell, revived
+  // for the billboard). Poses reshape the same figure — a kick winds up → strikes
+  // → follows through, a first touch cushions, a whiffed slide grounds then rises.
+  // Render-only — reads sim output, mutates no sim state (bar render-cache fields).
+  // Everything is in units of PR so the figure scales with depthScale.
   private drawPlayer(p: Player): void {
     // a single non-finite coord would poison the whole batched Graphics (one bad
     // translateCanvas blanks every figure), so skip a corrupted player outright
@@ -2638,7 +2650,9 @@ export class MatchScene extends Phaser.Scene {
 
     // smoothed facing (orientation cue only; the figure itself stays upright)
     const flen = Math.hypot(p.faceX, p.faceY) || 1;
-    const tgt = Math.atan2(p.faceY / flen, p.faceX / flen);
+    const cosF = p.faceX / flen;
+    const sinF = p.faceY / flen;
+    const tgt = Math.atan2(sinF, cosF);
     if (!Number.isFinite(p.renderAng)) p.renderAng = tgt;
     const dA = Phaser.Math.Angle.Wrap(tgt - p.renderAng);
     p.renderAng = Phaser.Math.Angle.Wrap(p.renderAng + dA * (this.reduceMotion ? 1 : 0.3));
@@ -2646,86 +2660,142 @@ export class MatchScene extends Phaser.Scene {
     const sin = Math.sin(p.renderAng); // +toward camera (down) / −away (up)
 
     const speed = Math.hypot(p.vx, p.vy);
-    const gait = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad;
-    const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT);
+    const gaitAmt = this.reduceMotion ? 0 : Phaser.Math.Clamp(speed / 200, 0, 1) * cad;
+    const sel = selectPose(p.kickT, p.diveT, p.slideT, p.recovery, p.celebrateT, p.receiveT);
     const ds = depthScale(p.y, this.py, this.ph);
     // celebrate hop lifts the whole figure (shadow stays grounded → reads as a jump)
     const hop = sel.action === 'celebrate' && !this.reduceMotion ? Math.abs(Math.sin(runT * 6 + p.phase)) * 0.8 * PR : 0;
+
+    // accel/decel squash-stretch (#131/#144), driven by the change in forward speed:
+    // stretch tall + thin on a burst, squash low + wide on a hard brake; kickPop folds
+    // in the sprint-thrust and kick-contact pop. Springs back via the sim-ticked kickPop.
+    const fwdNow = p.vx * cosF + p.vy * sinF;
+    const fwdPrev = p.pvx * cosF + p.pvy * sinF;
+    const accelAlong = this.realDtSec > 0 ? (fwdNow - fwdPrev) / this.realDtSec : 0;
+    const sq = squashStretch(this.reduceMotion ? 0 : accelAlong, this.reduceMotion ? 0 : p.kickPop, this.squashScratch);
+    p.pvx = p.vx;
+    p.pvy = p.vy;
 
     const U = PR;
     const mirror = cos < -0.02 ? -1 : 1; // facing left → mirror the whole figure
     const horiz = Math.abs(cos); // how lateral the run is (0 = straight toward/away)
     const backView = sin < -0.4; // running away → show the back of the head
-    const lean = (speed > 40 ? 0.5 : 0.2) * horiz * U; // upper-body lean into travel
-    const leanAt = (h: number) => (lean * -h) / (3.0 * U); // lean grows toward the head
-
-    // gait + committed-pose amplitudes
-    const sw = (this.reduceMotion ? 0 : Math.sin(runT * 2 + p.phase)) * gait * 0.85 * U; // stride swing
-    const kickP = sel.action === 'kick' ? Phaser.Math.Clamp(sel.t, 0, 1) : 0;
-    const grounded = sel.action === 'slide' || sel.action === 'dive';
-    const armsUp = sel.action === 'celebrate' || (p.role === 'GK' && sel.action === 'dive');
-
     const isGK = p.role === 'GK';
     const skinArm = this.shade(p.skin, 0.96);
+
+    // pose channels
+    const ga = gaitPose(runT * 2 + p.phase, gaitAmt, this.gaitScratch);
+    const kp = sel.action === 'kick' ? kickPose(sel.t, this.kickScratch) : null;
+    const rp = sel.action === 'receive' ? receivePose(sel.t, this.recvScratch) : null;
+    const slidePose = sel.action === 'slide';
+    const grounded = slidePose || sel.action === 'dive';
+    const armsUp = sel.action === 'celebrate' || (isGK && sel.action === 'dive');
+
+    // a whiffed-slide RECOVER eases the figure back up from face-down (tip → 0)
+    const tip = grounded ? -0.95 : sel.action === 'recover' ? -0.95 * (1 - sel.t) : 0;
+
+    // upper-body lean: into lateral travel + a forward lean from the kick / a slight
+    // backward cushion on a receive. Both grow toward the head (h more negative = higher).
+    const crouch = rp ? rp.crouch : 1;
+    const lateralLean = (speed > 40 ? 0.5 : 0.2) * horiz * U;
+    const poseLean = ((kp ? kp.lean : 0) + (rp ? rp.lean : 0)) * U;
+    const totalLean = lateralLean + poseLean;
+    const leanAt = (h: number) => (totalLean * -h) / (3.0 * U);
+
+    const bob = ga.bob * U;
 
     const g = this.bodyGfx;
     g.save();
     g.translateCanvas(p.x, p.y - hop);
     g.scaleCanvas(ds, ds);
     if (mirror < 0) g.scaleCanvas(-1, 1); // draw facing right; mirror to face left
-    if (grounded) {
-      g.rotateCanvas(-0.95); // tip forward into a slide / dive
-      g.translateCanvas(0.35 * U, -0.1 * U);
+    g.scaleCanvas(sq.sy, sq.sx); // accel/decel squash: width = sy (perp), height = sx (along)
+    if (tip !== 0) {
+      g.rotateCanvas(tip); // tip forward into a slide / dive, ease back up on a recover
+      const f = tip / -0.95;
+      g.translateCanvas(0.35 * U * f, -0.1 * U * f);
     }
 
-    // ---- heights (feet at 0, up = −y) ----
-    const hipY = -1.0 * U;
-    const shoulderY = isGK ? -2.45 * U : -2.3 * U;
-    const headCY = isGK ? -2.95 * U : -2.8 * U;
+    // ---- heights (feet at 0, up = −y); bob raises the body, crouch lowers it ----
+    const hipY = -1.0 * U * crouch - bob;
+    const shoulderY = (isGK ? -2.45 : -2.3) * U * crouch - bob;
+    const headCY = (isGK ? -2.95 : -2.8) * U * crouch - bob;
     const headR = (isGK ? 0.58 : 0.55) * U;
 
-    // ---- legs (shorts thighs to boots), contralateral stride ----
-    const legW = 0.46 * U;
-    const legX = 0.33 * U;
-    const backLegX = -legX + sw * 0.45;
-    const frontLegX = legX - sw * 0.45;
-    const backFootY = -Math.max(0, sw) * 0.55; // trailing foot lifts on the back swing
-    const frontFootY = -Math.max(0, -sw) * 0.55 - kickP * 1.15 * U; // lead foot, or a kick swing up
-    this.vLimb(g, backLegX, hipY, backFootY, legW, p.shorts);
-    this.vLimb(g, frontLegX, hipY, frontFootY, legW, p.shorts);
-    g.fillStyle(C.deep, 1); // boots
-    g.fillEllipse(backLegX + 0.14 * U, backFootY + 0.02 * U, 0.52 * U, 0.3 * U);
-    g.fillEllipse(frontLegX + 0.14 * U, frontFootY + 0.02 * U, 0.52 * U, 0.3 * U);
+    // ---- per-leg targets (foot x/y + knee bend), by pose ----
+    // a narrow hip stance so the profile stride splits clearly fore/aft (the feet
+    // alternate front↔back along travel) instead of scissoring side-by-side.
+    const legW = 0.44 * U;
+    const legX = 0.16 * U;
+    let backX: number, backFY: number, backBend: number, frontX: number, frontFY: number, frontBend: number;
+    if (kp) {
+      // striking leg = front (winds back, sweeps through, finishes high); plant = back
+      frontX = legX + kp.legX * U;
+      frontFY = -kp.legLift * U;
+      frontBend = Math.max(0, 0.45 - Math.max(0, Math.min(1, kp.legX)) * 0.45);
+      backX = -legX;
+      backFY = 0;
+      backBend = kp.plantKnee;
+    } else if (slidePose) {
+      frontX = legX + 1.0 * U; // both legs thrown forward in the lunge
+      frontFY = -0.1 * U;
+      frontBend = 0.1;
+      backX = -legX + 0.7 * U;
+      backFY = 0;
+      backBend = 0.2;
+    } else if (rp) {
+      frontX = legX + rp.reach * U; // lead foot reaches to meet the ball
+      frontFY = 0;
+      frontBend = 0.2;
+      backX = -legX;
+      backFY = 0;
+      backBend = 0.12;
+    } else {
+      backX = -legX + ga.backLegX * U; // run gait (also covers recover/celebrate/dive — gentle)
+      backFY = -ga.backFootLift * U;
+      backBend = ga.backKnee;
+      frontX = legX + ga.frontLegX * U;
+      frontFY = -ga.frontFootLift * U;
+      frontBend = ga.frontKnee;
+    }
 
-    // ---- far arm (behind the torso) swings opposite the near leg ----
-    const armW = 0.32 * U;
-    const armX = 0.6 * U;
-    const armTop = shoulderY + 0.12 * U;
-    const farArmEnd = armsUp ? shoulderY - 1.05 * U : hipY - 0.05 * U + sw * 0.4;
-    this.vLimb(g, -armX + leanAt(armTop), armTop, farArmEnd + leanAt(farArmEnd), armW, skinArm);
+    // ---- far arm (behind the torso) ----
+    const armW = 0.3 * U;
+    const armSh = shoulderY + 0.12 * U;
+    const swing = (kp ? kp.armX : ga.armX) * U; // near arm fore/aft; far arm opposite
+    const farShX = -0.58 * U + leanAt(armSh);
+    const farHandX = (armsUp ? -0.5 : -0.62) * U - swing + leanAt(hipY);
+    const farHandY = armsUp ? shoulderY - 1.05 * U : hipY + 0.08 * U;
+    this.seg(g, farShX, armSh, farHandX, farHandY, armW, skinArm);
+
+    // ---- legs (drawn over the far arm, under the torso); hips fixed, feet swing ----
+    this.drawLeg(g, -legX + leanAt(hipY) * 0.4, hipY, backX, backFY, backBend, legW, p.shorts);
+    this.drawLeg(g, legX + leanAt(hipY) * 0.4, hipY, frontX, frontFY, frontBend, legW, p.shorts);
 
     // ---- torso (jersey) + shorts block ----
     const tTop = shoulderY;
-    const tBot = -1.12 * U;
-    const sx = leanAt((tTop + tBot) / 2);
+    const tBot = -1.12 * U * crouch - bob;
+    const sxLean = leanAt((tTop + tBot) / 2);
     g.fillStyle(p.kit, 1);
-    g.fillRoundedRect(-0.74 * U + sx, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
+    g.fillRoundedRect(-0.74 * U + sxLean, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
     g.fillStyle(p.shorts, 1);
     g.fillRoundedRect(-0.68 * U + leanAt(tBot), tBot - 0.12 * U, 1.36 * U, 0.66 * U, 0.24 * U);
     g.lineStyle(1.5, p.rim, 0.55); // crisp edge for dark kits on the turf
-    g.strokeRoundedRect(-0.74 * U + sx, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
+    g.strokeRoundedRect(-0.74 * U + sxLean, tTop, 1.48 * U, tBot - tTop, 0.42 * U);
     g.fillStyle(p.shoulderHi, 1); // lightened shoulder band — fake top-light
     g.fillRoundedRect(-0.74 * U + leanAt(tTop), tTop, 1.48 * U, 0.36 * U, 0.18 * U);
 
     // ---- near arm (in front of the torso) ----
-    const nearArmEnd = armsUp ? shoulderY - 1.05 * U : hipY - 0.05 * U - sw * 0.4;
-    this.vLimb(g, armX + leanAt(armTop), armTop, nearArmEnd + leanAt(nearArmEnd), armW, p.skin);
+    const nearShX = 0.58 * U + leanAt(armSh);
+    const nearHandX = (armsUp ? 0.5 : 0.62) * U + swing + leanAt(hipY);
+    const nearHandY = armsUp ? shoulderY - 1.05 * U : hipY + 0.08 * U;
+    this.seg(g, nearShX, armSh, nearHandX, nearHandY, armW, p.skin);
 
     // keeper gloves at the hand ends
     if (isGK) {
       g.fillStyle(C.light, 1);
-      g.fillCircle(-armX + leanAt(farArmEnd), farArmEnd, 0.27 * U);
-      g.fillCircle(armX + leanAt(nearArmEnd), nearArmEnd, 0.27 * U);
+      g.fillCircle(farHandX, farHandY, 0.27 * U);
+      g.fillCircle(nearHandX, nearHandY, 0.27 * U);
     }
 
     // ---- head: skin dome + hair; front shows a face, back is all hair ----
@@ -2745,14 +2815,43 @@ export class MatchScene extends Phaser.Scene {
     g.restore();
   }
 
-  // A vertical limb capsule between (cx, aY) and (cx, bY) — the upright figure's
-  // legs and arms. Order-independent in y, so a raised arm (end above the
-  // shoulder) draws correctly. Local frame, up = −y.
-  private vLimb(g: Phaser.GameObjects.Graphics, cx: number, aY: number, bY: number, w: number, color: number): void {
-    const topY = Math.min(aY, bY);
-    const h = Math.abs(aY - bY);
+  // A jointed leg: hip → knee → foot, two capsule segments with a forward knee
+  // bend (`bend` 0..1) so a recovering / planting leg flexes instead of staying a
+  // rigid stick. The boot caps the foot. `hipX` is the hip anchor; `footX/footY`
+  // the foot; the knee sits between them, led forward + lifted by the bend (#anim).
+  private drawLeg(
+    g: Phaser.GameObjects.Graphics,
+    hipX: number,
+    hipY: number,
+    footX: number,
+    footY: number,
+    bend: number,
+    w: number,
+    color: number,
+  ): void {
+    const U = PR;
+    const b = bend < 0 ? 0 : bend > 1 ? 1 : bend;
+    const kneeX = (hipX + footX) / 2 + b * 0.5 * U;
+    const kneeY = (hipY + footY) / 2 - b * 0.12 * U;
+    this.seg(g, hipX, hipY, kneeX, kneeY, w, color); // thigh
+    this.seg(g, kneeX, kneeY, footX, footY, w * 0.84, color); // shin
+    g.fillStyle(C.deep, 1); // boot
+    g.fillEllipse(footX + 0.14 * U, footY + 0.02 * U, 0.52 * U, 0.3 * U);
+  }
+
+  // A capsule (rounded bar, width `w`) between two arbitrary points in the current
+  // figure transform — the jointed legs/arms. Rotates into place so a limb can
+  // angle freely; round caps fake the joints. (#anim, replaces the vertical-only vLimb.)
+  private seg(g: Phaser.GameObjects.Graphics, x1: number, y1: number, x2: number, y2: number, w: number, color: number): void {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    g.save();
+    g.translateCanvas(x1, y1);
+    g.rotateCanvas(Math.atan2(dy, dx));
     g.fillStyle(color, 1);
-    g.fillRoundedRect(cx - w / 2, topY, w, h, Math.min(w, h) * 0.49);
+    g.fillRoundedRect(-w / 2, -w / 2, len + w, w, w / 2); // joint-to-joint with rounded ends
+    g.restore();
   }
 
   // Three-zone charge bar — weak (0-40%, dim) / strong (40-80%, cyan) /
