@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { cameraTarget, followStep, baseZoom, framingFits, zoomPunchStep, type Vec2, type Bounds } from './camera';
+import {
+  cameraTarget,
+  followStep,
+  baseZoom,
+  framingFits,
+  zoomPunchStep,
+  shakeIntensity,
+  shakeDuration,
+  type Vec2,
+  type Bounds,
+} from './camera';
 
 const BOUNDS: Bounds = { x: 0, y: 0, w: 1280, h: 720 };
 
@@ -170,5 +180,36 @@ describe('zoomPunchStep', () => {
   it('holds when dt is non-positive and recovers from non-finite', () => {
     expect(zoomPunchStep(1.7, 1.5, 0)).toBe(1.7);
     expect(zoomPunchStep(NaN, 1.5, 0.016)).toBe(1.5);
+  });
+});
+
+describe('shake curve (#139)', () => {
+  it('intensity runs from a floor at impact 0 to a capped max at impact 1', () => {
+    expect(shakeIntensity(0)).toBeCloseTo(0.006, 6);
+    expect(shakeIntensity(1)).toBeCloseTo(0.016, 6);
+  });
+
+  it('intensity is monotonic and never exceeds the readability cap', () => {
+    let prev = -1;
+    for (let i = 0; i <= 20; i++) {
+      const v = shakeIntensity(i / 20);
+      expect(v).toBeGreaterThanOrEqual(prev);
+      expect(v).toBeLessThanOrEqual(0.016 + 1e-9); // hard cap
+      prev = v;
+    }
+    expect(shakeIntensity(5)).toBeLessThanOrEqual(0.016); // clamps impact > 1
+  });
+
+  it('a tap-in and a screamer-goal map to clearly different (bounded) shakes', () => {
+    const tapIn = shakeIntensity(0.2);
+    const screamer = shakeIntensity(1.0);
+    expect(screamer).toBeGreaterThan(tapIn + 0.004); // visibly stronger
+    expect(screamer).toBeLessThanOrEqual(0.016);
+  });
+
+  it('duration scales with impact within bounds', () => {
+    expect(shakeDuration(0)).toBe(200);
+    expect(shakeDuration(1)).toBe(320);
+    expect(shakeDuration(0.5)).toBeGreaterThan(shakeDuration(0));
   });
 });
