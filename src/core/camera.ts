@@ -91,3 +91,49 @@ function clampScroll(scroll: number, view: number, min: number, size: number): n
   if (scroll > max) return max;
   return scroll;
 }
+
+// --- zoom level + snap-zoom punch (#127) -----------------------------------
+
+export type ZoomLevel = 'wide' | 'balanced' | 'tight';
+
+/**
+ * Resting broadcast zoom for each player-chosen level. WIDE (1.0) frames the full
+ * pitch (the classic flat view); BALANCED (2.0) is the default broadcast framing —
+ * ~55% of the pitch length, the GDD look; TIGHT (2.4) is noticeably closer.
+ */
+export function baseZoom(level: ZoomLevel): number {
+  switch (level) {
+    case 'wide':
+      return 1.0;
+    case 'tight':
+      return 2.4;
+    case 'balanced':
+    default:
+      return 2.0;
+  }
+}
+
+/**
+ * Framing-safety gate: at zoom `z`, with the follow framing led `lead` px ahead
+ * of the carrier, can the ball AND the nearest goal mouth still sit inside the
+ * visible half-width? Half-width at z is (gameW / z) / 2. A hard predicate (not a
+ * manual eyeball) so a too-tight zoom can fail CI.
+ */
+export function framingFits(z: number, lead: number, gameW = 1280, ballR = 9, halfGoalMouth = 84): boolean {
+  if (!(z > 0)) return false;
+  const visibleHalfWidth = gameW / z / 2;
+  return visibleHalfWidth >= lead + ballR + halfGoalMouth;
+}
+
+/**
+ * Ease a punched zoom back toward the resting `base` over real time. The decay is
+ * exponential and frame-rate independent (one 16ms step == two 8ms steps), so a
+ * snap-zoom punch (cur = base * 1.18) recovers smoothly in ~0.7s. Snaps exactly
+ * to base within an epsilon to kill a lingering sliver. Pure (returns a number).
+ */
+export function zoomPunchStep(cur: number, base: number, dtSec: number, decayPerSec = 0.0005): number {
+  if (!Number.isFinite(cur)) return base;
+  if (!(dtSec > 0)) return cur;
+  const next = base + (cur - base) * Math.pow(decayPerSec, dtSec);
+  return Math.abs(next - base) < 0.001 ? base : next;
+}

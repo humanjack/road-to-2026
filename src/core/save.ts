@@ -23,6 +23,7 @@ function defaultSettings(): GameSettings {
     sprintMode: 'hold',
     passAssist: 'full',
     defensiveSwitch: 'auto',
+    zoomLevel: 'balanced',
   };
 }
 

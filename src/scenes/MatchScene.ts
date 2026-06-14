@@ -43,7 +43,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio } from '../core/audio';
-import { cameraTarget, followStep } from '../core/camera';
+import { cameraTarget, followStep, baseZoom, zoomPunchStep } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
 export interface MatchInit {
@@ -111,14 +111,14 @@ const GK_KIT_HOME = 0xffc53d; // amber
 const GK_KIT_AWAY = 0x19d3f0; // cyan
 const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-bar render
 
-// --- broadcast-arc camera (#125) ---------------------------------------------
-// A baseline follow-framing zoom so the camera can actually scroll within the
-// pitch (a follow camera over a world == viewport is inert). The configurable
-// ZOOM-LEVEL setting + ~55% framing + snap-zoom punches land in #127.
-const BROADCAST_ZOOM = 1.6; // baseline broadcast framing (~69% of pitch width in frame)
+// --- broadcast-arc camera (#125, #127) --------------------------------------
+// The resting zoom is the player's ZOOM setting (baseZoom() in core/camera); a
+// follow camera over a world == viewport is inert, so even WIDE keeps the world
+// at least the viewport size. Firework moments add a brief snap-zoom punch.
 const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack direction
 const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
+const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -218,6 +218,9 @@ export class MatchScene extends Phaser.Scene {
   private camScratch = { x: 0, y: 0 };
   private worldBounds = { x: 0, y: 0, w: GAME_W, h: GAME_H };
   private camFollow = true;
+  private restZoom = 2.0; // resting broadcast zoom from the ZOOM setting (#127)
+  private zoomCur = 2.0; // live zoom, eased back to restZoom after a snap-zoom punch
+  private realDtSec = 1 / 60; // last real frame delta (render-side zoom-punch decay)
 
   // --- time-fx (#126): slow-mo + hit-stop, presentation-side only ---
   private timeFlow = createTimeFlow();
@@ -263,9 +266,11 @@ export class MatchScene extends Phaser.Scene {
 
     // Set up the two-camera split BEFORE building any display objects so each can
     // be routed to its camera via onWorld()/onUi() as it is created.
+    this.restZoom = baseZoom(getSave().settings.zoomLevel); // ZOOM setting → resting framing (#127)
+    this.zoomCur = this.restZoom;
     this.uiCam = this.cameras.add(0, 0, GAME_W, GAME_H);
     this.cameras.main.setBounds(0, 0, GAME_W, GAME_H);
-    this.cameras.main.setZoom(BROADCAST_ZOOM);
+    this.cameras.main.setZoom(this.restZoom);
     this.camFollow = true;
     this.centerCameraOnPitch();
 
@@ -347,6 +352,10 @@ export class MatchScene extends Phaser.Scene {
   private updateCamera(): void {
     if (!this.camFollow) return;
     const cam = this.cameras.main;
+    // snap-zoom punch (#127) eases back to the resting zoom; real dt → independent
+    // of slow-mo. Set the zoom BEFORE computing the follow so framing uses it.
+    this.zoomCur = zoomPunchStep(this.zoomCur, this.restZoom, this.realDtSec);
+    cam.setZoom(this.zoomCur);
     const z = cam.zoom;
     const viewW = GAME_W / z;
     const viewH = GAME_H / z;
@@ -717,6 +726,7 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vy = 0;
       audio.play('tackle'); // physical thwock of a won challenge
       this.requestTimeFx('tackle'); // brief hit-stop on the clean steal
+      this.requestZoomPunch(); // camera punch on the clean steal (#127)
       this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
@@ -778,6 +788,7 @@ export class MatchScene extends Phaser.Scene {
 
   update(_time: number, deltaMs: number): void {
     if (this.finished) return;
+    this.realDtSec = deltaMs / 1000; // real frame delta for the render-side zoom punch (#127)
     // Presentation-side time dilation (slow-mo / hit-stop, #126). Advances by REAL
     // time and only changes HOW FAST real time is consumed below — never the sim
     // dt — so the fixed-timestep sim stays bit-identical (determinism / replays).
@@ -1105,6 +1116,7 @@ export class MatchScene extends Phaser.Scene {
     if (charge > 0.8) {
       this.shake(120, 0.006);
       this.requestTimeFx('screamer'); // slow-mo as the screamer flies
+      this.requestZoomPunch(); // camera punch on the screamer (#127)
       this.showBanner('SCREAMER!', C.surge, 500);
     }
     return true;
@@ -1701,6 +1713,7 @@ export class MatchScene extends Phaser.Scene {
     if (this.state !== 'play') return;
     this.lastScorer = side;
     this.requestTimeFx('goal'); // freeze + slow-mo on the net-hit (the firework moment)
+    this.requestZoomPunch(); // camera punch-in on the goal (#127)
     if (side === 'home') this.homeGoals++;
     else this.awayGoals++;
     // reward trailing team with surge reset; scoring team modest
@@ -1895,6 +1908,15 @@ export class MatchScene extends Phaser.Scene {
     } else {
       requestHitStop(this.timeFlow, 80);
     }
+  }
+
+  // Snap-zoom punch (#127): briefly tighten ~18% on a firework moment, then ease
+  // back to the resting zoom. Gated like shake/flash (off under reduceMotion) and
+  // only while the follow is live, so it never double-stacks with the full-time
+  // victory zoom.
+  private requestZoomPunch(): void {
+    if (this.reduceMotion || !this.camFollow) return;
+    this.zoomCur = this.restZoom * ZOOM_PUNCH;
   }
 
   private renderEntities(): void {
@@ -2246,6 +2268,7 @@ export class MatchScene extends Phaser.Scene {
     this.timeScale = 1;
     this.time.timeScale = 1;
     this.tweens.timeScale = 1;
+    this.zoomCur = this.restZoom; // drop any residual snap-zoom before the victory beat
     this.showBanner('FULL TIME', C.gold, 1600);
     audio.play('whistle');
     const knockout = this.cfg.context === 'knockout';
@@ -2269,7 +2292,7 @@ export class MatchScene extends Phaser.Scene {
     this.time.delayedCall(250, () => {
       if (this.finished) return;
       this.centerCameraOnPitch();
-      this.cameras.main.zoomTo(BROADCAST_ZOOM * 1.12, 1000, 'Quad.easeOut'); // punch in from the baseline framing
+      this.cameras.main.zoomTo(this.restZoom * 1.12, 1000, 'Quad.easeOut'); // punch in from the resting framing
       const spot = this.onWorld(this.add.container(this.px + this.pw / 2, this.py + this.ph / 2).setDepth(46));
       const sg = this.add.graphics();
       for (let i = 9; i >= 1; i--) {
