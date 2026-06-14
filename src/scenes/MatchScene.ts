@@ -725,6 +725,21 @@ export class MatchScene extends Phaser.Scene {
       g.fillCircle(gx, gy0, 7);
       g.fillCircle(gx, gy0 + this.goalH, 7);
     }
+    // corner flags (#191): a short pole + a little pennant at each pitch corner
+    const rX = this.px + this.pw;
+    const bY = this.py + this.ph;
+    for (const [cxF, cyF, dir] of [
+      [this.px, this.py, 1],
+      [rX, this.py, -1],
+      [this.px, bY, 1],
+      [rX, bY, -1],
+    ] as [number, number, number][]) {
+      const poleTop = cyF - 26; // pole rises up-screen from the corner (billboard convention)
+      g.lineStyle(2, 0xe8e8ee, 0.9);
+      g.lineBetween(cxF, cyF, cxF, poleTop);
+      g.fillStyle(C.flare, 0.95);
+      g.fillTriangle(cxF, poleTop, cxF, poleTop + 10, cxF + dir * 14, poleTop + 5); // pennant
+    }
   }
 
   // Goal geometry (#135), computed once: mouth top/bottom + the four post objects.
@@ -813,37 +828,99 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
-  // Deep backdrop + stand bands + crowd speckle, drawn once into the PARALLAX
-  // layer (bgGfx, #172) and over-sized by PARALLAX_MARGIN beyond the world so the
-  // backdrop's per-frame lag can never expose a void at any scroll/zoom extreme.
-  // Deterministic (index-based, NO rng) so it can never shift the seeded stream.
+  // Deep backdrop + a real stadium bowl (#191, Pixel-Cup reference): tiered concentric
+  // stands (back → front, dark → light), a dense team-tinted crowd, a bright pitch-side
+  // rail, and a perimeter ad-board ring. Drawn ONCE into the PARALLAX layer (bgGfx,
+  // #172), over-sized by PARALLAX_MARGIN so the backdrop's per-frame lag can never
+  // expose a void. Fully DETERMINISTIC (index-based, NO rng) so the seeded stream is
+  // untouched, and allocation-free per frame (it never redraws).
   private drawStadiumSurround(g: Phaser.GameObjects.Graphics, aurora: boolean): void {
     const M = PARALLAX_MARGIN;
     const ox = -M;
     const oy = -M;
     const ow = WORLD_W + 2 * M; // cover the whole enlarged world + lag margin (#183)
     const oh = WORLD_H + 2 * M;
-    // deep backdrop fills the whole over-rect (was the full-screen fill in drawPitch)
+    const px = this.px;
+    const py = this.py;
+    const pw = this.pw;
+    const ph = this.ph;
+    const rightX = px + pw;
+    const bottomY = py + ph;
+    // deep backdrop fills the whole over-rect
     g.fillStyle(C.indigo, 1);
     g.fillRect(ox, oy, ow, oh);
-    const standCol = aurora ? 0x141a30 : 0x0c1722;
-    const bottomY = this.py + this.ph;
-    const rightX = this.px + this.pw;
-    g.fillStyle(standCol, 1);
-    g.fillRect(ox, oy, ow, this.py - oy); // top stand (up to the over-top edge)
-    g.fillRect(ox, bottomY, ow, oy + oh - bottomY); // bottom stand (down to the over-bottom edge)
-    g.fillRect(ox, oy, this.px - ox, oh); // left stand
-    g.fillRect(rightX, oy, ox + ow - rightX, oh); // right stand
-    // faint crowd speckle on the top + bottom stands (two rows each), spanning the
-    // full world width — anchored just inside the top stand and just below the pitch.
-    g.fillStyle(0x9aa7c7, 0.12);
-    const speckles = Math.ceil(WORLD_W / 20) + 2;
-    for (let i = 0; i < speckles; i++) {
-      const x = 14 + i * 20 + (i % 3) * 4; // deterministic jitter by index
-      if (x > WORLD_W - 6) continue;
-      g.fillCircle(x, this.py - 90 + (i % 2) * 18, 2.2);
-      const yb = bottomY + 28 + (i % 2) * 18;
-      if (yb < WORLD_H - 6) g.fillCircle(x, yb, 2.2);
+    // --- tiered stand bowl: concentric frames from the over-rect edge toward the
+    // pitch, darkest at the back, lightest at the front (nearest the pitch). The turf
+    // layer (drawn in front) covers the pitch interior, so only the surround shows.
+    const tiers = aurora ? [0x0a1024, 0x121a33, 0x1b2742] : [0x081019, 0x102029, 0x192b35];
+    const ks = [0.45, 0.72, 0.92]; // fraction of the way from the over-rect to the pitch
+    for (let t = 0; t < tiers.length; t++) {
+      const k = ks[t];
+      const lx = ox + (px - ox) * k;
+      const ty = oy + (py - oy) * k;
+      const rx2 = ox + ow + (rightX - (ox + ow)) * k;
+      const by2 = oy + oh + (bottomY - (oy + oh)) * k;
+      g.fillStyle(tiers[t], 1);
+      g.fillRect(lx, ty, rx2 - lx, by2 - ty);
+    }
+    // --- crowd: a dense field of small flecks across the visible margin band, tinted
+    // toward the nearer team's colour (home left, away right) but mostly neutral.
+    const homeTint = this.shade(this.homeColor, 1.15);
+    const awayTint = this.shade(this.awayColor, 1.15);
+    const neutral = [0xb9c2d8, 0xd7ddec, 0x97a2bd, 0xcfc6b0, 0xe7e2d0];
+    const step = 14;
+    const cx0 = px + pw / 2;
+    for (let gy = oy + 22; gy < oy + oh - 8; gy += step) {
+      const insidePitchY = gy > py + 6 && gy < bottomY - 6;
+      for (let gx = ox + 18; gx < ox + ow - 8; gx += step) {
+        // only the margin around the pitch is visible (turf covers the interior)
+        if (insidePitchY && gx > px + 6 && gx < rightX - 6) continue;
+        const i = ((gx * 13) ^ (gy * 7)) & 0xffff; // deterministic per-cell hash
+        if (i % 7 === 0) continue; // a few gaps in the crowd
+        const jx = gx + (i % 3) * 3; // index jitter
+        const jy = gy + ((i >> 2) % 3) * 3;
+        let col: number;
+        if (i % 6 === 0) col = gx < cx0 ? homeTint : awayTint; // ~1 in 6 wears team colour
+        else col = neutral[i % neutral.length];
+        g.fillStyle(col, 0.62);
+        g.fillCircle(jx, jy, 2.1);
+      }
+    }
+    // --- bright rail right at the pitch edge (the stand's front wall)
+    g.lineStyle(3, aurora ? 0x2a3a5e : 0x24323f, 0.9);
+    g.strokeRect(px - 22, py - 22, pw + 44, ph + 44);
+    // --- perimeter ad boards: a ring of alternating panels just outside the pitch
+    this.drawAdBoards(g, px, py, pw, ph);
+  }
+
+  // A ring of alternating-colour advertising boards just outside the touchlines/
+  // bylines (#191). Deterministic, drawn once into the parallax layer.
+  private drawAdBoards(g: Phaser.GameObjects.Graphics, px: number, py: number, pw: number, ph: number): void {
+    const gap = 14; // board ring sits this far outside the pitch line
+    const bx = px - gap;
+    const by = py - gap;
+    const bw = pw + 2 * gap;
+    const bh = ph + 2 * gap;
+    const d = 12; // board depth
+    const panel = 64; // panel width
+    const cols = [0xd23b4a, 0x2466b0, 0xece7d8, 0x1d9e6c]; // brand-ish primaries + a light board
+    let n = 0;
+    const board = (x: number, y: number, w: number, h: number) => {
+      g.fillStyle(cols[n % cols.length], 0.85);
+      g.fillRect(x, y, w, h);
+      n++;
+    };
+    // top + bottom runs
+    for (let x = bx; x < bx + bw; x += panel) {
+      const w = Math.min(panel - 2, bx + bw - x);
+      board(x, by - d, w, d); // top
+      board(x, by + bh, w, d); // bottom
+    }
+    // left + right runs
+    for (let y = by; y < by + bh; y += panel) {
+      const h = Math.min(panel - 2, by + bh - y);
+      board(bx - d, y, d, h); // left
+      board(bx + bw, y, d, h); // right
     }
   }
 
