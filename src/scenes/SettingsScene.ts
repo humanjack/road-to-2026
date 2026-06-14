@@ -47,6 +47,8 @@ export class SettingsScene extends Phaser.Scene {
     this.cycle('PASS ASSIST', 'passAssist', ['full', 'semi', 'manual'], s.passAssist, rLabel, ry, rCtrl);
     ry += 62;
     this.cycle('DEF. SWITCHING', 'defensiveSwitch', ['auto', 'manual'], s.defensiveSwitch, rLabel, ry, rCtrl);
+    ry += 62;
+    this.cycle('ZOOM', 'zoomLevel', ['wide', 'balanced', 'tight'], s.zoomLevel, rLabel, ry, rCtrl);
     // a compact in-match controls reference
     this.add
       .text(rLabel, ry + 54, 'IN MATCH:  Move WASD · Shoot hold Space · Pass J\nThrough L · Tackle I (hold = slide) · Switch K · Mute M', {

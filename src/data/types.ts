@@ -129,6 +129,7 @@ export interface Cosmetics {
 export type SprintMode = 'hold' | 'toggle';
 export type PassAssist = 'full' | 'semi' | 'manual';
 export type DefensiveSwitch = 'auto' | 'manual';
+export type ZoomLevel = 'wide' | 'balanced' | 'tight';
 
 export interface GameSettings {
   fictionalNations: boolean;
@@ -141,6 +142,7 @@ export interface GameSettings {
   sprintMode: SprintMode; // hold SHIFT, or tap to toggle sprint on/off
   passAssist: PassAssist; // pass-cone width: full (casual) / semi / manual (near pure aim)
   defensiveSwitch: DefensiveSwitch; // auto-switch to the nearest defender, or manual only
+  zoomLevel: ZoomLevel; // broadcast camera framing: wide (full pitch) / balanced / tight (#127)
 }
 
 export interface CareerStats {
