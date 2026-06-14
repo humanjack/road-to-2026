@@ -14,3 +14,4 @@ slice*.png
 
 # local reference material (videos/images), not project assets
 references/
+resources/
