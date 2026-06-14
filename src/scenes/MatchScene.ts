@@ -562,6 +562,7 @@ export class MatchScene extends Phaser.Scene {
       this.ball.vx = 0;
       this.ball.vy = 0;
       audio.play('save');
+      this.fxBurst(this.ball.x, this.ball.y, t.side === 'home' ? this.homeColor : this.awayColor);
     } else if (res === 'loose') {
       this.ball.ownerIdx = -1;
       this.ball.vx = (this.ball.x - carrier.x) * 6;
@@ -569,6 +570,7 @@ export class MatchScene extends Phaser.Scene {
       this.lastKickIdx = ownerIdx; // dispossessed player can't instantly re-collect
       this.kickCooldown = 0.12;
       audio.play('kick');
+      this.fxBurst(this.ball.x, this.ball.y, C.light);
     } else if (slide) {
       t.recovery = 0.5; // whiffed slide → grounded (the risk)
     }
@@ -647,6 +649,7 @@ export class MatchScene extends Phaser.Scene {
     this.integratePlayers(dt);
     this.updateBall(dt);
     this.drainInputBuffer(); // fire any action queued just before we won the ball
+    this.updateMovementFx(dt); // sprint dust / turn skid on the active player
     this.updateSurge(dt);
     this.updatePowerups(dt);
     this.renderEntities();
@@ -739,6 +742,76 @@ export class MatchScene extends Phaser.Scene {
       ease: 'Quad.easeOut',
       onComplete: () => ring.destroy(),
     });
+  }
+
+  // --- movement visual feedback (#103) -----------------------------------
+  // All cues are decorative (not information) → skipped under reduceMotion. Each
+  // is a short self-destroying tween, so nothing accumulates over a match; dust
+  // and skid are rate-gated so they can't spam.
+  private dustTimer = 0;
+  private skidTimer = 0;
+  private prevActiveVx = 0;
+  private prevActiveVy = 0;
+
+  private updateMovementFx(dt: number): void {
+    if (this.reduceMotion) return;
+    this.dustTimer -= dt;
+    this.skidTimer -= dt;
+    const ap = this.players[this.activeIdx];
+    if (!ap) return;
+    const speed = Math.hypot(ap.vx, ap.vy);
+    // sprint dust kicked up behind the player
+    if (ap.sprinting && speed > 120 && this.dustTimer <= 0) {
+      this.dustTimer = 0.07;
+      const inv = 1 / (speed || 1);
+      this.fxDust(ap.x - ap.vx * inv * PR, ap.y - ap.vy * inv * PR);
+    }
+    // hard-turn skid: a big swing in velocity direction at pace
+    const pl = Math.hypot(this.prevActiveVx, this.prevActiveVy);
+    if (speed > 130 && pl > 130 && this.skidTimer <= 0) {
+      const dot = (ap.vx * this.prevActiveVx + ap.vy * this.prevActiveVy) / (speed * pl);
+      if (dot < 0.55) {
+        this.skidTimer = 0.18;
+        this.fxSkid(ap.x, ap.y, Math.atan2(this.prevActiveVy, this.prevActiveVx));
+      }
+    }
+    this.prevActiveVx = ap.vx;
+    this.prevActiveVy = ap.vy;
+  }
+
+  private fxDust(x: number, y: number): void {
+    const d = this.add
+      .circle(x + this.rng.range(-3, 3), y + this.rng.range(-2, 4), this.rng.range(2, 4), 0xcfcad6, 0.5)
+      .setDepth(8);
+    this.tweens.add({ targets: d, scale: 1.9, alpha: 0, duration: 360, onComplete: () => d.destroy() });
+  }
+
+  private fxSkid(x: number, y: number, ang: number): void {
+    const s = this.add.rectangle(x, y + 4, 20, 3, C.deep, 0.45).setDepth(8).setRotation(ang);
+    this.tweens.add({ targets: s, alpha: 0, duration: 320, onComplete: () => s.destroy() });
+  }
+
+  private fxSpark(x: number, y: number, color: number): void {
+    if (this.reduceMotion) return;
+    const ring = this.add.circle(x, y, BR + 1).setStrokeStyle(2, color, 0.9).setDepth(16);
+    this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: 240, ease: 'Quad.easeOut', onComplete: () => ring.destroy() });
+  }
+
+  private fxBurst(x: number, y: number, color: number): void {
+    if (this.reduceMotion) return;
+    for (let k = 0; k < 8; k++) {
+      const a = this.rng.range(0, Math.PI * 2);
+      const sp = this.rng.range(40, 120);
+      const dot = this.add.circle(x, y, this.rng.range(2, 4), color).setDepth(17);
+      this.tweens.add({
+        targets: dot,
+        x: x + Math.cos(a) * sp,
+        y: y + Math.sin(a) * sp,
+        alpha: 0,
+        duration: this.rng.range(220, 360),
+        onComplete: () => dot.destroy(),
+      });
+    }
   }
 
   private inputVector(): { x: number; y: number } {
@@ -1338,6 +1411,7 @@ export class MatchScene extends Phaser.Scene {
         }
       });
       if (owner >= 0) {
+        const collectSpeed = Math.hypot(this.ball.vx, this.ball.vy); // pre-collect (for the touch fx)
         this.ball.ownerIdx = owner;
         this.ball.vx = 0;
         this.ball.vy = 0;
@@ -1348,6 +1422,8 @@ export class MatchScene extends Phaser.Scene {
         this.ballCarryAng = Math.atan2(o.faceY, o.faceX);
         // mark reception time on the controlled player (one-touch window ref, #96)
         if (owner === this.activeIdx) this.lastReceiveAt = this.time.now;
+        // clean first-touch spark when settling a moving ball (readability of #93)
+        if (collectSpeed > 170) this.fxSpark(this.ball.x, this.ball.y, o.side === 'home' ? this.homeColor : this.awayColor);
       }
     } else {
       // carry the ball ahead of the owner: distance grows with speed (a sprint
