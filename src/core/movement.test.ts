@@ -22,6 +22,7 @@ import {
   keeperTarget,
   saveOutcome,
   SAVE_REACH,
+  chooseSwitchTarget,
   PASS_CONE,
   type PassMate,
   PLAYER_ACCEL,
@@ -461,5 +462,33 @@ describe('saveOutcome', () => {
     const weak = saveOutcome(SAVE_REACH * 0.9, SAVE_REACH, 0.2, 0.5);
     const strong = saveOutcome(SAVE_REACH * 0.1, SAVE_REACH, 0.9, 0.5);
     expect(rank(strong)).toBeGreaterThanOrEqual(rank(weak));
+  });
+});
+
+describe('chooseSwitchTarget', () => {
+  // own goal on the left (x=64); ball at x=700
+  const ownGoalX = 64;
+  const ballX = 700;
+  const ballY = 360;
+
+  it('prefers a goal-side defender over a closer one that is up-field of the ball', () => {
+    const cands = [
+      { x: 760, y: 360 }, // 0: very close but BEHIND the ball (up-field, wrong side)
+      { x: 500, y: 380 }, // 1: a bit further but goal-side (between ball and our goal)
+    ];
+    expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, -1)).toBe(1);
+  });
+
+  it('among goal-side defenders, picks the nearest to the ball', () => {
+    const cands = [
+      { x: 300, y: 360 }, // far goal-side
+      { x: 600, y: 360 }, // near goal-side
+    ];
+    expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, -1)).toBe(1);
+  });
+
+  it('skips the current player and returns -1 when no other candidate exists', () => {
+    const cands = [{ x: 500, y: 360 }];
+    expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, 0)).toBe(-1);
   });
 });
