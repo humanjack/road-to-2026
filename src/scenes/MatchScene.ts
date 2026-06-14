@@ -32,6 +32,7 @@ import {
   keeperTarget,
   saveOutcome,
   SAVE_REACH,
+  chooseSwitchTarget,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -636,6 +637,7 @@ export class MatchScene extends Phaser.Scene {
 
     // PLAY
     this.elapsed += dt;
+    if (this.switchCd > 0) this.switchCd -= dt;
     this.updateActiveSelection();
     this.updateTackleInput(); // hold I past the threshold → committed slide
     this.updateUserControl(dt);
@@ -701,12 +703,40 @@ export class MatchScene extends Phaser.Scene {
     if (best !== this.activeIdx) this.setActive(best);
   }
 
+  private switchCd = 0; // brief cooldown so tapping switch can't thrash control
+
   private manualSwitch(): void {
-    // cycle to next home outfielder
-    const outfield = this.players.map((p, i) => ({ p, i })).filter((o) => o.p.side === 'home' && o.p.role !== 'GK');
-    const cur = outfield.findIndex((o) => o.i === this.activeIdx);
-    const next = outfield[(cur + 1) % outfield.length];
-    this.setActive(next.i);
+    if (this.switchCd > 0) return;
+    // pick the most useful defender (nearest goal-side of the ball), not array-next
+    const idxs: number[] = [];
+    const cands: { x: number; y: number }[] = [];
+    this.players.forEach((p, i) => {
+      if (p.side !== 'home' || p.role === 'GK') return;
+      idxs.push(i);
+      cands.push({ x: p.x, y: p.y });
+    });
+    const cur = idxs.indexOf(this.activeIdx);
+    const ownGoalX = this.px; // home defends the left goal line
+    const sel = chooseSwitchTarget(cands, this.ball.x, this.ball.y, ownGoalX, cur);
+    if (sel < 0) return;
+    this.setActive(idxs[sel]);
+    this.switchCd = 0.22;
+    this.flashSwitch(this.players[idxs[sel]]);
+  }
+
+  // Brief expanding ring on the newly-selected player so the eye can follow the
+  // switch (reduceMotion: skipped — the gold active ring already marks it).
+  private flashSwitch(p: Player): void {
+    if (this.reduceMotion) return;
+    const ring = this.add.circle(p.x, p.y, PR + 6).setStrokeStyle(3, C.gold, 1).setDepth(21);
+    this.tweens.add({
+      targets: ring,
+      scale: 2.1,
+      alpha: 0,
+      duration: 280,
+      ease: 'Quad.easeOut',
+      onComplete: () => ring.destroy(),
+    });
   }
 
   private inputVector(): { x: number; y: number } {

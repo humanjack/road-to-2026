@@ -460,3 +460,46 @@ export function saveOutcome(distToBall: number, reach: number, reaction: number,
   if (roll < save) return (prox + react) * 0.5 > 0.62 ? 'catch' : 'parry';
   return 'beaten';
 }
+
+// --- player switching ------------------------------------------------------
+//
+// On defence you want the team-mate who can actually make a play — the closest
+// one that's goal-side of the ball (between the ball and your goal), not the
+// next body in an array. Index-cycling is the #1 mobile-frustration the GDD
+// calls out; this picks the useful man.
+
+/**
+ * Pick the most useful defender to switch to: prefer candidates goal-side of the
+ * ball (a strong bonus), then nearest to the ball. Skips `currentIdx` unless it
+ * is the only option. Returns the index into `cands`, or -1 if empty.
+ */
+export function chooseSwitchTarget(
+  cands: { x: number; y: number }[],
+  ballX: number,
+  ballY: number,
+  ownGoalX: number,
+  currentIdx: number,
+): number {
+  const goalIsLeft = ownGoalX < ballX; // is our goal to the -x side of the ball?
+  let bestGoalSide = -1;
+  let bestGoalSideD = Infinity;
+  let bestAny = -1;
+  let bestAnyD = Infinity;
+  for (let i = 0; i < cands.length; i++) {
+    if (i === currentIdx) continue; // a switch should move to someone else
+    const c = cands[i];
+    const d = Math.hypot(c.x - ballX, c.y - ballY);
+    if (d < bestAnyD) {
+      bestAnyD = d;
+      bestAny = i;
+    }
+    const onGoalSide = goalIsLeft ? c.x <= ballX : c.x >= ballX;
+    if (onGoalSide && d < bestGoalSideD) {
+      bestGoalSideD = d;
+      bestGoalSide = i;
+    }
+  }
+  // a goal-side defender can actually make a play; only if there are none do we
+  // fall back to the nearest body
+  return bestGoalSide >= 0 ? bestGoalSide : bestAny;
+}
