@@ -4,6 +4,7 @@ import { getSave, updateSettings, clearSave } from '../core/save';
 import type { GameSettings } from '../data/types';
 import { audio } from '../core/audio';
 import { transitionTo, fadeInScene } from '../ui/transitions';
+import { buildControlLegend, SETTINGS_CONTROLS } from '../ui/controls';
 
 export class SettingsScene extends Phaser.Scene {
   constructor() {
@@ -49,13 +50,17 @@ export class SettingsScene extends Phaser.Scene {
     this.cycle('DEF. SWITCHING', 'defensiveSwitch', ['auto', 'manual'], s.defensiveSwitch, rLabel, ry, rCtrl);
     ry += 62;
     this.cycle('ZOOM', 'zoomLevel', ['wide', 'balanced', 'tight'], s.zoomLevel, rLabel, ry, rCtrl);
-    // a compact in-match controls reference
+    // glyph control legend (#146): the same grouped key-cap chips as the in-match
+    // HUD, wrapped to the right column, plus an explicit touch-control description
     this.add
-      .text(rLabel, ry + 54, 'IN MATCH:  Move WASD · Shoot hold Space · Pass J\nThrough L · Tackle I (hold = slide) · Switch K · Mute M', {
+      .text(rLabel, ry + 50, 'IN MATCH', { fontFamily: FONT_DISPLAY, fontSize: '13px', color: CSS.mid })
+      .setOrigin(0, 0);
+    const legend = buildControlLegend(this, rLabel, ry + 72, SETTINGS_CONTROLS, GAME_W - rLabel - 24);
+    this.add
+      .text(rLabel, ry + 72 + legend.height + 10, 'Touch:  left half = move  ·  right half = shoot', {
         fontFamily: FONT_BODY,
         fontSize: '13px',
         color: CSS.mid,
-        lineSpacing: 4,
       })
       .setOrigin(0, 0);
 

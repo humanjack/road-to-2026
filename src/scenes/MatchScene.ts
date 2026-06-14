@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { C, CSS, FONT_DISPLAY, FONT_BODY, GAME_W, GAME_H, hex } from '../ui/theme';
+import { buildControlLegend, MATCH_CONTROLS } from '../ui/controls';
 import { displayName } from '../data/names';
 import { resolveTeam, ballColor } from '../data/extras';
 import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
@@ -678,14 +679,9 @@ export class MatchScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     quit.on('pointerdown', () => this.abandon());
 
-    const hint = this.add
-      .text(24, GAME_H - 22, 'Move WASD · Shoot Space · Pass J · Through L · Tackle I (hold=slide) · Skill O · Switch K', {
-        fontFamily: FONT_BODY,
-        fontSize: '14px',
-        color: CSS.mid,
-      })
-      .setOrigin(0, 1)
-      .setDepth(31);
+    // glyph control legend (#146): grouped key-cap chips + labels, built ONCE in
+    // the bottom-left corner (static; no per-frame cost), replacing the run-on text
+    const legend = buildControlLegend(this, 24, GAME_H - 32, MATCH_CONTROLS);
 
     // Persistent mute indicator — always reflects the current state (unlike a
     // banner, it can't be clobbered by a GOAL/SURGE message).
@@ -715,7 +711,7 @@ export class MatchScene extends Phaser.Scene {
       this.shotsHomeText,
       this.shotsAwayText,
       quit,
-      hint,
+      ...legend.objects,
       this.muteTag,
     ]);
   }
