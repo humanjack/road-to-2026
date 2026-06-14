@@ -6,6 +6,10 @@ import {
   carryOffset,
   easeCarryAngle,
   CARRY_BASE,
+  bufferConsumable,
+  bufferExpired,
+  isOneTouch,
+  INPUT_BUFFER_MS,
   PLAYER_ACCEL,
   PLAYER_DECEL,
 } from './movement';
@@ -229,5 +233,37 @@ describe('easeCarryAngle', () => {
   it('snaps to target with lag=1 and recovers from NaN', () => {
     expect(easeCarryAngle(0.4, 1.2, 1)).toBeCloseTo(1.2, 6);
     expect(easeCarryAngle(NaN, 0.7, 0.3)).toBe(0.7);
+  });
+});
+
+describe('input buffer', () => {
+  it('a press within the window is consumable, then expires after it', () => {
+    const buf = { action: 'pass', t: 1000 };
+    expect(bufferConsumable(buf, 1000)).toBe(true); // same frame
+    expect(bufferConsumable(buf, 1000 + INPUT_BUFFER_MS)).toBe(true); // edge of window
+    expect(bufferConsumable(buf, 1000 + INPUT_BUFFER_MS + 1)).toBe(false); // just past
+    expect(bufferExpired(buf, 1000 + INPUT_BUFFER_MS + 1)).toBe(true);
+    expect(bufferExpired(buf, 1100)).toBe(false);
+  });
+
+  it('models the real scenario: press 100ms early fires on the legal frame', () => {
+    const pressT = 5000;
+    const buf = { action: 'shoot', t: pressT, charge: 0.9 };
+    const legalAt = pressT + 100; // ball arrives 100ms later
+    expect(bufferConsumable(buf, legalAt)).toBe(true);
+    // but a press 200ms before a legal frame is already stale → dropped
+    expect(bufferConsumable({ action: 'shoot', t: pressT }, pressT + 200)).toBe(false);
+  });
+
+  it('ignores a null buffer and never fires a future-dated press', () => {
+    expect(bufferConsumable(null, 100)).toBe(false);
+    expect(bufferExpired(null, 100)).toBe(false);
+    expect(bufferConsumable({ action: 'pass', t: 200 }, 100)).toBe(false); // now < t
+  });
+
+  it('flags a one-touch only within the receive window', () => {
+    expect(isOneTouch(1000, 1100)).toBe(true); // 100ms after receiving
+    expect(isOneTouch(1000, 1260)).toBe(false); // 260ms → not one-touch
+    expect(isOneTouch(1000, 999)).toBe(false); // before receiving
   });
 });
