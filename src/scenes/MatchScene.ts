@@ -25,6 +25,7 @@ import {
   POKE_REACH,
   SLIDE_REACH,
   choosePassTarget,
+  throughBallLead,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -353,7 +354,7 @@ export class MatchScene extends Phaser.Scene {
     quit.on('pointerdown', () => this.abandon());
 
     this.add
-      .text(24, GAME_H - 22, 'Move: WASD   ·   Shoot: hold Space   ·   Pass: J   ·   Tackle: I (hold=slide)   ·   Switch: K   ·   Mute: M', {
+      .text(24, GAME_H - 22, 'Move: WASD   ·   Shoot: hold Space   ·   Pass: J   ·   Through: L   ·   Tackle: I (hold=slide)   ·   Switch: K', {
         fontFamily: FONT_BODY,
         fontSize: '14px',
         color: CSS.mid,
@@ -443,7 +444,7 @@ export class MatchScene extends Phaser.Scene {
 
   private setupInput(): void {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,M,I,SHIFT') as Record<
+    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,J,K,L,M,I,SHIFT') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -486,6 +487,9 @@ export class MatchScene extends Phaser.Scene {
     this.keys.SPACE.on('up', () => this.releaseShot());
     this.keys.J.on('down', () => {
       if (!this.doPass()) this.bufferInput('pass'); // pressed early → fire on reception
+    });
+    this.keys.L.on('down', () => {
+      if (!this.doThroughBall()) this.bufferInput('through'); // lead a runner into space
     });
     this.keys.K.on('down', () => this.manualSwitch());
     // Tackle (I): tap = standing poke (short reach, no risk); hold past
@@ -854,6 +858,39 @@ export class MatchScene extends Phaser.Scene {
     return true;
   }
 
+  // Through-ball: a weighted pass into the space ahead of a forward runner.
+  // Returns false (so the press can be buffered) if the active player has no ball;
+  // falls back to a normal forward pass when no forward runner is in the cone.
+  private doThroughBall(): boolean {
+    const p = this.players[this.activeIdx];
+    if (!p || this.ball.ownerIdx !== this.activeIdx) return false;
+    const attackDir = 1; // home attacks +x
+    const mateIdx: number[] = [];
+    const mates: PassMate[] = [];
+    this.players.forEach((t, i) => {
+      if (t.side !== 'home' || i === this.activeIdx || t.role === 'GK') return;
+      mateIdx.push(i);
+      mates.push({ x: t.x, y: t.y, vx: t.vx, vy: t.vy });
+    });
+    if (!mates.length) return false;
+    // aim generally forward (nudged by facing), wide cone, strong forward bias →
+    // the most advanced runner roughly in front of you
+    const sel = choosePassTarget(p.x, p.y, attackDir + p.faceX * 0.4, p.faceY * 0.5, mates, PASS_CONE.full, attackDir, 2.5);
+    if (sel < 0) return this.doPass(); // no forward option → a normal forward pass
+    const targetIdx = mateIdx[sel];
+    const t = this.players[targetIdx];
+    const lead = throughBallLead(t.x, t.y, t.vx, t.vy, attackDir);
+    const tx = Phaser.Math.Clamp(lead.x, this.px + BR, this.px + this.pw - BR);
+    const ty = Phaser.Math.Clamp(lead.y, this.py + BR, this.py + this.ph - BR);
+    const dx = tx - p.x;
+    const dy = ty - p.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const power = Math.min(720, 360 + len * 1.5); // driven, with extra pace to beat the line
+    this.kickBall(p, (dx / len) * power, (dy / len) * power);
+    this.setActive(targetIdx);
+    return true;
+  }
+
   // --- input buffer ------------------------------------------------------
   // Queue an action pressed a hair before it's legal; drainInputBuffer() fires
   // it the instant the active player owns the ball (within INPUT_BUFFER_MS).
@@ -875,7 +912,14 @@ export class MatchScene extends Phaser.Scene {
     if (!bufferConsumable(buf, now, INPUT_BUFFER_MS)) return;
     // only legal once the controlled player actually has the ball
     if (this.activeIdx < 0 || this.ball.ownerIdx !== this.activeIdx) return;
-    const done = buf.action === 'shoot' ? this.fireShot(buf.charge ?? 0.5) : buf.action === 'pass' ? this.doPass() : false;
+    const done =
+      buf.action === 'shoot'
+        ? this.fireShot(buf.charge ?? 0.5)
+        : buf.action === 'pass'
+          ? this.doPass()
+          : buf.action === 'through'
+            ? this.doThroughBall()
+            : false;
     if (done) this.inputBuf = null;
   }
 
