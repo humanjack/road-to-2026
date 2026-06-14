@@ -55,7 +55,7 @@ import {
   type PassMate,
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
-import { limbPose, selectPose, chooseCelebrant } from '../core/poses';
+import { limbPose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
 import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
@@ -436,9 +436,10 @@ export class MatchScene extends Phaser.Scene {
     // Stadium surround behind the touchlines so a scrolled/zoomed broadcast frame
     // reads as a stadium instead of blank margin (static fill; parallax is #128).
     this.drawStadiumSurround(g, aurora);
-    // turf stripes (aurora cosmetic re-tints the grass cool/violet)
-    const stripeA = aurora ? 0x1b2a4a : 0x16331f;
-    const stripeB = aurora ? 0x16223d : 0x12281a;
+    // turf stripes — vivid saturated pitch-lime broadcast surface (#128); the
+    // aurora cosmetic still re-tints the grass cool/violet
+    const stripeA = aurora ? 0x1b2a4a : C.turfA;
+    const stripeB = aurora ? 0x16223d : C.turfB;
     const stripes = 10;
     for (let i = 0; i < stripes; i++) {
       g.fillStyle(i % 2 === 0 ? stripeA : stripeB, 1);
@@ -458,11 +459,11 @@ export class MatchScene extends Phaser.Scene {
     this.softGlow(g, this.px + 50, this.py + this.ph / 2, 200, this.homeColor, 0.06);
     this.softGlow(g, this.px + this.pw - 50, this.py + this.ph / 2, 200, this.awayColor, 0.06);
 
-    g.lineStyle(3, 0xffffff, 0.5);
+    g.lineStyle(3, 0xffffff, 0.68); // crisper markings on the brighter turf (#128)
     g.strokeRect(this.px, this.py, this.pw, this.ph);
     g.lineBetween(this.px + this.pw / 2, this.py, this.px + this.pw / 2, this.py + this.ph);
     g.strokeCircle(this.px + this.pw / 2, this.py + this.ph / 2, 70);
-    g.fillStyle(0xffffff, 0.6);
+    g.fillStyle(0xffffff, 0.8);
     g.fillCircle(this.px + this.pw / 2, this.py + this.ph / 2, 4);
     // goals + boxes
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
@@ -2243,7 +2244,8 @@ export class MatchScene extends Phaser.Scene {
     this.shadowGfx.fillStyle(C.deep, 0.26);
     for (const p of this.players) {
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
-      this.shadowGfx.fillEllipse(p.x + 2, p.y + 3, PR * 2.1, PR * 1.45);
+      const ds = depthScale(p.y, this.py, this.ph); // shadow shrinks with the figure (#128)
+      this.shadowGfx.fillEllipse(p.x + 2, p.y + 3, PR * 2.1 * ds, PR * 1.45 * ds);
     }
     this.bodyGfx.clear();
     const runT = this.reduceMotion ? 0 : this.time.now * 0.018;
@@ -2301,9 +2303,11 @@ export class MatchScene extends Phaser.Scene {
     this.dyn.clear();
     // per-team centre marker — colour-independent team identity (accessibility).
     // Keepers get it too, so the two GKs are tellable apart by side, not just kit.
+    // marker + rings track the figure's depth scale (#128) so a far player's
+    // overlay never looks oversized against the smaller silhouette
     for (const p of this.players) {
       this.dyn.fillStyle(p.side === 'home' ? C.deep : C.white, 0.85);
-      this.dyn.fillCircle(p.x, p.y, 4);
+      this.dyn.fillCircle(p.x, p.y, 4 * depthScale(p.y, this.py, this.ph));
     }
     // possession ring on the actual ball owner (team colour), under the gold
     // active ring so a viewer can tell who HOLDS the ball, not just who's active
@@ -2311,16 +2315,17 @@ export class MatchScene extends Phaser.Scene {
       const owner = this.players[this.ball.ownerIdx];
       const ocol = owner.side === 'home' ? this.homeColor : this.awayColor;
       this.dyn.lineStyle(3, ocol, 0.4 + 0.25 * this.pulse);
-      this.dyn.strokeCircle(owner.x, owner.y, PR + 9);
+      this.dyn.strokeCircle(owner.x, owner.y, (PR + 9) * depthScale(owner.y, this.py, this.ph));
     }
     // active player ring
     const ap = this.players[this.activeIdx];
     if (ap) {
+      const ds = depthScale(ap.y, this.py, this.ph);
       this.dyn.lineStyle(3, C.gold, 1);
-      this.dyn.strokeCircle(ap.x, ap.y, PR + 6);
-      // small arrow under active
+      this.dyn.strokeCircle(ap.x, ap.y, (PR + 6) * ds);
+      // small arrow under active (scales + lifts with the figure's depth)
       this.dyn.fillStyle(C.gold, 1);
-      this.dyn.fillTriangle(ap.x - 6, ap.y - PR - 12, ap.x + 6, ap.y - PR - 12, ap.x, ap.y - PR - 4);
+      this.dyn.fillTriangle(ap.x - 6 * ds, ap.y - (PR + 12) * ds, ap.x + 6 * ds, ap.y - (PR + 12) * ds, ap.x, ap.y - (PR + 4) * ds);
       this.drawStaminaNub(ap);
     }
     if (this.charging && ap) this.drawChargeBar(ap); else this.chargeText.setVisible(false);
@@ -2393,6 +2398,9 @@ export class MatchScene extends Phaser.Scene {
     g.rotateCanvas(p.renderAng + p.leanAng);
     if (pose.lean !== 0) g.translateCanvas(pose.lean, 0); // forward shift along facing
     if (pose.crouch !== 1) g.scaleCanvas(1, pose.crouch); // lay low for a slide / dive
+    // scale-for-depth (#128): gentle broadcast perspective, clamped [0.88,1.12]
+    const ds = depthScale(p.y, this.py, this.ph);
+    g.scaleCanvas(ds, ds);
 
     // limbs first (under the torso), offset per the active pose, contralateral
     this.drawLimb(g, -0.3 * PR, 0.3 * PR, 0.78 * PR, 0.34 * PR, pose.farLeg, p.shorts); // far leg

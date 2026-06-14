@@ -167,3 +167,20 @@ export function chooseCelebrant(
   }
   return best;
 }
+
+// Broadcast scale-for-depth (#128): a gentle perspective on the flat top-down
+// board — figures nearer the far (top) touchline draw smaller, nearer (bottom)
+// ones larger. This is the OUTERMOST figure multiply and is hard-clamped to
+// [DEPTH_FAR, DEPTH_NEAR] so that composed with the squash-stretch band [0.85,
+// 1.18] (#131) and the body-lean it can never invert or balloon the silhouette.
+// Pure + allocation-free; a function of y only, so it is static (renders
+// identically under reduceMotion — it is depth readability, not motion juice).
+export const DEPTH_NEAR = 1.12; // at the near (bottom) touchline
+export const DEPTH_FAR = 0.88; // at the far (top) touchline
+
+export function depthScale(y: number, py: number, ph: number): number {
+  if (!Number.isFinite(y) || !Number.isFinite(py) || !Number.isFinite(ph) || ph <= 0) return 1;
+  const t = (y - py) / ph; // 0 at the far touchline (top), 1 at the near one (bottom)
+  const f = DEPTH_FAR + (DEPTH_NEAR - DEPTH_FAR) * t;
+  return f < DEPTH_FAR ? DEPTH_FAR : f > DEPTH_NEAR ? DEPTH_NEAR : f;
+}

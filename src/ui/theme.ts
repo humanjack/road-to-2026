@@ -6,6 +6,8 @@ export const C = {
   indigo: 0x1a1240, // Deep Pitch Indigo — base background
   cyan: 0x19d3f0, // Electric Cyan — secondary accent
   lime: 0x7be83c, // Pitch Lime — pitch surface
+  turfA: 0x2f8d3a, // vivid mowing stripe (deeper lime-green) — #128
+  turfB: 0x3aa647, // vivid mowing stripe (lighter lime-green) — #128
   gold: 0xffc53d, // Aurora Gold — trophy / finals
   flare: 0xff7a33, // Flare Orange — energy / warning
   light: 0xf5f7ff,
