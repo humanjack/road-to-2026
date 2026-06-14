@@ -47,7 +47,7 @@ import {
   type TackleResult,
   type PassMate,
 } from '../core/movement';
-import { audio } from '../core/audio';
+import { audio, crowdLevelFromSurge } from '../core/audio';
 import { cameraTarget, followStep, baseZoom, zoomPunchStep, shakeIntensity, shakeDuration } from '../core/camera';
 import { createTimeFlow, resetTimeFlow, requestHitStop, requestSlowMo, stepTimeScale } from '../core/timeflow';
 
@@ -716,7 +716,10 @@ export class MatchScene extends Phaser.Scene {
     const ownerIdx = this.ball.ownerIdx;
     // nothing to win if the ball is loose or held by a team-mate
     if (ownerIdx < 0 || this.players[ownerIdx].side === t.side) {
-      if (slide) t.recovery = 0.5; // a committed slide into nothing still grounds you
+      if (slide) {
+        t.recovery = 0.5; // a committed slide into nothing still grounds you
+        audio.play('whiff'); // dry scuff (#134)
+      }
       return 'miss';
     }
     const carrier = this.players[ownerIdx];
@@ -746,6 +749,7 @@ export class MatchScene extends Phaser.Scene {
       this.fxBurst(this.ball.x, this.ball.y, C.light);
     } else if (slide) {
       t.recovery = 0.5; // whiffed slide → grounded (the risk)
+      audio.play('whiff'); // dry scuff on the miss (#134)
     }
     return res;
   }
@@ -859,6 +863,7 @@ export class MatchScene extends Phaser.Scene {
     // music tension tracks the bigger Surge meter + how late the match is
     const tension = Math.max(this.surgeHome, this.surgeAway) / 100;
     audio.setIntensity(0.25 + tension * 0.5 + (this.elapsed / this.duration) * 0.2);
+    audio.setCrowd(crowdLevelFromSurge(tension, this.elapsed / this.duration)); // crowd breathes with Surge (#134)
 
     if (this.elapsed >= this.duration) this.onFullTime();
   }
@@ -1938,6 +1943,7 @@ export class MatchScene extends Phaser.Scene {
     this.wallShakeCd = 0.12;
     const impact = Math.min(1, speed / 980); // shotPower01-style normalisation
     this.shake(woodwork ? 90 : 70, (woodwork ? 0.008 : 0.005) + impact * 0.004);
+    audio.playImpact(woodwork ? 'post' : 'wallthud', impact); // impact voice — not reduceMotion-gated (#134)
   }
 
   private shake(dur: number, intensity: number): void {
