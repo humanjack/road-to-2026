@@ -33,6 +33,8 @@ import {
   saveOutcome,
   SAVE_REACH,
   chooseSwitchTarget,
+  assignMarks,
+  markPoint,
   PASS_CONE,
   type BufferedInput,
   type TackleResult,
@@ -994,6 +996,37 @@ export class MatchScene extends Phaser.Scene {
       });
     });
 
+    // Marking: when a side has the ball, the OTHER side's non-chaser outfielders
+    // each pick up a man (one-to-one, most-dangerous attacker first) and sit
+    // goal-side of him. Computed once per frame (O(d*a), d,a ≤ 4).
+    const markTarget: Record<number, { x: number; y: number }> = {};
+    const owner = this.ball.ownerIdx;
+    if (owner >= 0) {
+      const attSide = this.players[owner].side;
+      const defSide: Side = attSide === 'home' ? 'away' : 'home';
+      const ownGoalX = defSide === 'home' ? this.px : this.px + this.pw;
+      const ownGoalY = this.py + this.ph / 2;
+      const defIdx: number[] = [];
+      const defPos: { x: number; y: number }[] = [];
+      this.players.forEach((q, qi) => {
+        if (q.side === defSide && q.role !== 'GK' && qi !== chaser[defSide]) {
+          defIdx.push(qi);
+          defPos.push({ x: q.x, y: q.y });
+        }
+      });
+      const att = this.players
+        .map((q, qi) => ({ q, qi }))
+        .filter((o) => o.q.side === attSide && o.q.role !== 'GK' && o.qi !== owner)
+        .sort((a, b) => Math.abs(a.q.x - ownGoalX) - Math.abs(b.q.x - ownGoalX)); // nearest our goal = most dangerous
+      const assign = assignMarks(defPos, att.map((o) => ({ x: o.q.x, y: o.q.y })));
+      assign.forEach((aIdx, d) => {
+        if (aIdx >= 0) {
+          const atk = att[aIdx].q;
+          markTarget[defIdx[d]] = markPoint(atk.x, atk.y, ownGoalX, ownGoalY);
+        }
+      });
+    }
+
     this.players.forEach((p, i) => {
       if (p.isUser) return;
       p.sprinting = false; // AI never sprints; keep the knock-on flag clean for the carry block
@@ -1067,9 +1100,13 @@ export class MatchScene extends Phaser.Scene {
           tx = p.hx + attackDir * 40 + ballAdvance * 70 * attackDir;
           ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.2;
         }
+      } else if (markTarget[i]) {
+        // OUT OF POSSESSION, marking a man: sit goal-side of him (assigned above)
+        tx = markTarget[i].x;
+        ty = markTarget[i].y;
       } else {
-        // OUT OF POSSESSION (not the chaser): defensive shape — drop a touch and
-        // shift to the ball side
+        // OUT OF POSSESSION, spare defender: hold defensive shape — drop a touch
+        // and shift to the ball side (covers central space in front of goal)
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
         tx = p.hx + attackDir * -10 + ballAdvance * 90 * attackDir;
         ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.18;

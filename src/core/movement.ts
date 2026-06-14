@@ -503,3 +503,53 @@ export function chooseSwitchTarget(
   // fall back to the nearest body
   return bestGoalSide >= 0 ? bestGoalSide : bestAny;
 }
+
+// --- marking & cover -------------------------------------------------------
+//
+// When the opponent has the ball, defenders shouldn't ball-watch in formation —
+// each should pick up a man. A one-to-one greedy assignment (most-dangerous
+// attacker gets the nearest free defender first) avoids two defenders chasing
+// the same runner and leaving someone free; each marker then sits goal-side of
+// its man so it's between the attacker and the goal.
+
+/**
+ * Assign each defender at most one attacker to mark (and each attacker at most
+ * one defender). Attackers should be passed most-dangerous first; each grabs the
+ * nearest still-free defender. Returns, per defender, the attacker index it
+ * marks (or -1). One-to-one — no double-marks, no free dangerous man.
+ */
+export function assignMarks(defenders: { x: number; y: number }[], attackers: { x: number; y: number }[]): number[] {
+  const marks = new Array(defenders.length).fill(-1);
+  const used = new Array(defenders.length).fill(false);
+  for (let a = 0; a < attackers.length; a++) {
+    let best = -1;
+    let bestD = Infinity;
+    for (let d = 0; d < defenders.length; d++) {
+      if (used[d]) continue;
+      const dd = Math.hypot(defenders[d].x - attackers[a].x, defenders[d].y - attackers[a].y);
+      if (dd < bestD) {
+        bestD = dd;
+        best = d;
+      }
+    }
+    if (best >= 0) {
+      used[best] = true;
+      marks[best] = a;
+    }
+  }
+  return marks;
+}
+
+/** A goal-side marking spot: `standoff` px from the attacker toward our goal. */
+export function markPoint(
+  attackerX: number,
+  attackerY: number,
+  ownGoalX: number,
+  ownGoalY: number,
+  standoff = 42,
+): { x: number; y: number } {
+  const dx = ownGoalX - attackerX;
+  const dy = ownGoalY - attackerY;
+  const L = Math.hypot(dx, dy) || 1;
+  return { x: attackerX + (dx / L) * standoff, y: attackerY + (dy / L) * standoff };
+}
