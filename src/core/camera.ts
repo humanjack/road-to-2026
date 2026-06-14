@@ -143,6 +143,130 @@ export function zoomPunchStep(cur: number, base: number, dtSec: number, decayPer
   return Math.abs(next - base) < 0.001 ? base : next;
 }
 
+// --- multi-view camera (#176) ----------------------------------------------
+//
+// Four player-selectable framings bound to the number keys. The three "follow"
+// views reuse the existing ZoomLevel zooms (so the number keys are also an
+// in-match shortcut for the ZOOM setting); TACTICAL is a transient zoomed-out
+// static overhead — the broadcast follow is handed off and the frame is pinned
+// centred on the pitch so the whole shape of play reads at once.
+
+export type CameraView = 'full' | 'broadcast' | 'tight' | 'tactical';
+
+export const VIEW_LABEL: Record<CameraView, string> = {
+  full: 'FULL PITCH',
+  broadcast: 'BROADCAST',
+  tight: 'ACTION CAM',
+  tactical: 'TACTICAL',
+};
+
+/** Map a number-row digit (1..4) to a view; null for any other key. */
+export function viewFromDigit(d: number): CameraView | null {
+  switch (d) {
+    case 1:
+      return 'full';
+    case 2:
+      return 'broadcast';
+    case 3:
+      return 'tight';
+    case 4:
+      return 'tactical';
+    default:
+      return null;
+  }
+}
+
+/**
+ * The ZoomLevel a follow-view persists back to `settings.zoomLevel` (so the
+ * number keys remember your framing between matches). TACTICAL is transient and
+ * returns null — it never overwrites the saved setting.
+ */
+export function viewZoomLevel(view: CameraView): ZoomLevel | null {
+  switch (view) {
+    case 'full':
+      return 'wide';
+    case 'broadcast':
+      return 'balanced';
+    case 'tight':
+      return 'tight';
+    default:
+      return null;
+  }
+}
+
+/** Inverse of viewZoomLevel: the view the saved ZoomLevel boots into. */
+export function viewForZoomLevel(level: ZoomLevel): CameraView {
+  switch (level) {
+    case 'wide':
+      return 'full';
+    case 'tight':
+      return 'tight';
+    case 'balanced':
+    default:
+      return 'broadcast';
+  }
+}
+
+export interface ViewFraming {
+  zoom: number; // camera zoom for the view
+  follow: boolean; // does the broadcast follow drive scroll/zoom?
+  label: string; // the on-screen toast
+}
+
+/**
+ * Framing for a view. Follow views derive their zoom from baseZoom() (single
+ * source of truth with the ZOOM setting); TACTICAL takes its zoom from the
+ * caller (it depends on the live pitch + viewport dims — see fitZoom). Pure.
+ */
+export function cameraViewConfig(view: CameraView, tacticalZoom: number): ViewFraming {
+  switch (view) {
+    case 'full':
+      return { zoom: baseZoom('wide'), follow: true, label: VIEW_LABEL.full };
+    case 'tight':
+      return { zoom: baseZoom('tight'), follow: true, label: VIEW_LABEL.tight };
+    case 'tactical':
+      return { zoom: tacticalZoom, follow: false, label: VIEW_LABEL.tactical };
+    case 'broadcast':
+    default:
+      return { zoom: baseZoom('balanced'), follow: true, label: VIEW_LABEL.broadcast };
+  }
+}
+
+/**
+ * The zoom that fits a `contentW x contentH` rect inside a `viewportW x viewportH`
+ * screen — the smaller axis ratio, so the whole rect is visible (letterboxed on
+ * the looser axis). The tactical view feeds this the pitch + a margin so it always
+ * frames the full pitch with room for the stands, at any design resolution. Pure.
+ */
+export function fitZoom(contentW: number, contentH: number, viewportW: number, viewportH: number): number {
+  if (!(contentW > 0) || !(contentH > 0) || !(viewportW > 0) || !(viewportH > 0)) return 1;
+  return Math.min(viewportW / contentW, viewportH / contentH);
+}
+
+/**
+ * Camera bounds for the static TACTICAL frame: a rect EXACTLY the size of the
+ * zoomed view, centred on the pitch centre, so the camera cannot scroll and the
+ * frame is pinned dead-centre (a fixed coach-cam). The backdrop surround is
+ * over-sized enough to cover the revealed area at this zoom-out. Pure; writes `out`.
+ */
+export function tacticalBounds(
+  pitchCx: number,
+  pitchCy: number,
+  gameW: number,
+  gameH: number,
+  zoom: number,
+  out: Bounds = { x: 0, y: 0, w: 0, h: 0 },
+): Bounds {
+  const z = zoom > 0 ? zoom : 1;
+  const viewW = gameW / z;
+  const viewH = gameH / z;
+  out.x = pitchCx - viewW / 2;
+  out.y = pitchCy - viewH / 2;
+  out.w = viewW;
+  out.h = viewH;
+  return out;
+}
+
 // --- screen-shake curve (#139) ---------------------------------------------
 
 /**

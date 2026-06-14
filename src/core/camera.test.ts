@@ -10,6 +10,13 @@ import {
   parallaxShift,
   velocityLead,
   deadzone1d,
+  viewFromDigit,
+  viewZoomLevel,
+  viewForZoomLevel,
+  cameraViewConfig,
+  fitZoom,
+  tacticalBounds,
+  VIEW_LABEL,
   type Vec2,
   type Bounds,
 } from './camera';
@@ -297,5 +304,80 @@ describe('deadzone1d (#125 anti-jitter)', () => {
 
   it('survives a non-finite delta', () => {
     expect(deadzone1d(NaN, 26)).toBe(0);
+  });
+});
+
+describe('multi-view camera (#176)', () => {
+  it('maps the number keys 1-4 to views, rejecting anything else', () => {
+    expect(viewFromDigit(1)).toBe('full');
+    expect(viewFromDigit(2)).toBe('broadcast');
+    expect(viewFromDigit(3)).toBe('tight');
+    expect(viewFromDigit(4)).toBe('tactical');
+    expect(viewFromDigit(0)).toBeNull();
+    expect(viewFromDigit(5)).toBeNull();
+    expect(viewFromDigit(NaN)).toBeNull();
+  });
+
+  it('follow views persist a ZoomLevel; tactical never overwrites the setting', () => {
+    expect(viewZoomLevel('full')).toBe('wide');
+    expect(viewZoomLevel('broadcast')).toBe('balanced');
+    expect(viewZoomLevel('tight')).toBe('tight');
+    expect(viewZoomLevel('tactical')).toBeNull();
+  });
+
+  it('round-trips ZoomLevel <-> view for the three follow views', () => {
+    expect(viewForZoomLevel('wide')).toBe('full');
+    expect(viewForZoomLevel('balanced')).toBe('broadcast');
+    expect(viewForZoomLevel('tight')).toBe('tight');
+    for (const lvl of ['wide', 'balanced', 'tight'] as const) {
+      expect(viewZoomLevel(viewForZoomLevel(lvl))).toBe(lvl);
+    }
+  });
+
+  it('framing: follow views use baseZoom and follow; tactical takes the caller zoom and does not follow', () => {
+    expect(cameraViewConfig('full', 0.85)).toEqual({ zoom: baseZoom('wide'), follow: true, label: VIEW_LABEL.full });
+    expect(cameraViewConfig('broadcast', 0.85)).toEqual({
+      zoom: baseZoom('balanced'),
+      follow: true,
+      label: VIEW_LABEL.broadcast,
+    });
+    expect(cameraViewConfig('tight', 0.85)).toEqual({ zoom: baseZoom('tight'), follow: true, label: VIEW_LABEL.tight });
+    const tac = cameraViewConfig('tactical', 0.85);
+    expect(tac).toEqual({ zoom: 0.85, follow: false, label: VIEW_LABEL.tactical });
+  });
+
+  it('the full view shows the whole 1280x720 world at zoom 1 (view == world)', () => {
+    expect(cameraViewConfig('full', 0.85).zoom).toBe(1.0);
+  });
+
+  it('fitZoom returns the smaller axis ratio so the whole rect fits', () => {
+    // pitch (1152x560) + 140 margin each side -> 1432x840 fit into 1280x720
+    const z = fitZoom(1432, 840, 1280, 720);
+    expect(z).toBeCloseTo(Math.min(1280 / 1432, 720 / 840), 6);
+    expect(z).toBeLessThan(1); // tactical pulls back beyond the full-pitch view
+    // at this zoom the content fits within the viewport on both axes
+    expect(1432 * z).toBeLessThanOrEqual(1280 + 1e-6);
+    expect(840 * z).toBeLessThanOrEqual(720 + 1e-6);
+  });
+
+  it('fitZoom is defensive against non-positive dims', () => {
+    expect(fitZoom(0, 100, 1280, 720)).toBe(1);
+    expect(fitZoom(100, 100, -1, 720)).toBe(1);
+  });
+
+  it('tacticalBounds is a view-sized rect centred on the pitch (so the camera is pinned static)', () => {
+    const z = 0.8;
+    const b = tacticalBounds(640, 376, 1280, 720, z);
+    expect(b.w).toBeCloseTo(1280 / z, 6);
+    expect(b.h).toBeCloseTo(720 / z, 6);
+    // centre of the bounds == pitch centre on both axes
+    expect(b.x + b.w / 2).toBeCloseTo(640, 6);
+    expect(b.y + b.h / 2).toBeCloseTo(376, 6);
+  });
+
+  it('tacticalBounds survives a non-positive zoom', () => {
+    const b = tacticalBounds(640, 376, 1280, 720, 0);
+    expect(Number.isFinite(b.w)).toBe(true);
+    expect(b.w).toBe(1280);
   });
 });

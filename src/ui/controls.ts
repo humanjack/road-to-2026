@@ -21,6 +21,7 @@ export const MATCH_CONTROLS: ChipSpec[] = [
   { glyph: 'I', label: 'Tackle' },
   { glyph: 'O', label: 'Skill' },
   { glyph: 'K', label: 'Switch' },
+  { glyph: '1-4', label: 'View' },
 ];
 
 // Fuller legend for the Settings reference (adds the slide + mute hints).
@@ -32,6 +33,7 @@ export const SETTINGS_CONTROLS: ChipSpec[] = [
   { glyph: 'I', label: 'Tackle / hold = slide' },
   { glyph: 'O', label: 'Skill' },
   { glyph: 'K', label: 'Switch' },
+  { glyph: '1-4', label: 'Camera view' },
   { glyph: 'M', label: 'Mute' },
 ];
 
