@@ -4,7 +4,7 @@ import { displayName } from '../data/names';
 import { resolveTeam, ballColor } from '../data/extras';
 import type { Team, MatchResult, MatchStats, Difficulty } from '../data/types';
 import { recordMatch, getSave } from '../core/save';
-import { penaltyShootout } from '../core/simMatch';
+import { penaltyShootout, type PenKick, type PenShootout } from '../core/simMatch';
 import { RNG, randomSeed } from '../core/rng';
 import {
   approachVelocity,
@@ -148,6 +148,8 @@ const GOAL_FREEZE = 1.3; // sim seconds of post-goal celebration / slow-mo fill
 const GOAL_FREEZE_RM = 0.85; // reduce-motion: trimmed (no juice to hold for)
 const KICKOFF_HOLD = 0.6; // sim seconds of the kick-off set piece before play
 const GOAL_SKIP_AFTER = 0.5; // earliest the user may skip the cosmetic celebration tail
+const PEN_KICK_CADENCE = 0.95; // sim seconds per penalty-kick reveal (#142)
+const PEN_KICK_CADENCE_RM = 0.6; // reduce-motion: snappier (no flourish to hold)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -984,7 +986,11 @@ export class MatchScene extends Phaser.Scene {
       }
       return;
     }
-    if (this.state === 'fulltime' || this.state === 'pens') return;
+    if (this.state === 'pens') {
+      this.updatePenReveal(dt); // staged kick-by-kick reveal, sim-ticked (#142)
+      return;
+    }
+    if (this.state === 'fulltime') return;
 
     // PLAY
     this.elapsed += dt;
@@ -2614,42 +2620,90 @@ export class MatchScene extends Phaser.Scene {
     });
   }
 
+  // Set up the staged shootout reveal (#142). The RESULT is penaltyShootout's
+  // deterministic tally; this walks its ordered kicks[] on a sim-ticked cadence.
   private runPenalties(): void {
     const pens = penaltyShootout(this.home, this.away, this.rng);
-    this.penResult = pens;
-
-    if (this.reduceMotion) {
-      this.showBanner(`PENALTIES  ${pens.home}-${pens.away}`, C.surge, 2200);
-      this.time.delayedCall(2400, () => this.finishMatch());
-      return;
-    }
-
-    // Dramatic reveal: the PENALTIES title slides up from below, then the
-    // resolved score drops in from above and bounces.
+    this.penResult = { home: pens.home, away: pens.away };
+    this.penShootout = pens;
+    this.penKickIdx = 0;
+    this.penH = 0;
+    this.penA = 0;
+    this.penTimer = this.reduceMotion ? PEN_KICK_CADENCE_RM : PEN_KICK_CADENCE;
+    // wide framing so both goals are in shot for the shootout
+    this.cameras.main.setZoom(1.0);
+    this.centerCameraOnPitch();
     const cx = GAME_W / 2;
-    const cy = GAME_H / 2;
     const title = this.onUi(
       this.add
-        .text(cx, GAME_H + 60, 'PENALTIES', { fontFamily: FONT_DISPLAY, fontSize: '54px', color: CSS.surge })
+        .text(cx, GAME_H + 60, 'PENALTIES', { fontFamily: FONT_DISPLAY, fontSize: '48px', color: CSS.surge })
         .setOrigin(0.5)
         .setDepth(51)
         .setStroke('#0e0a24', 6),
     );
-    this.tweens.add({ targets: title, y: cy - 64, duration: 600, ease: 'Back.easeOut' });
-    this.time.delayedCall(700, () => {
-      const score = this.onUi(
-        this.add
-          .text(cx, -60, `${pens.home} - ${pens.away}`, { fontFamily: FONT_DISPLAY, fontSize: '78px', color: CSS.gold })
-          .setOrigin(0.5)
-          .setDepth(51)
-          .setStroke('#0e0a24', 6),
-      );
-      this.tweens.add({ targets: score, y: cy + 26, duration: 650, ease: 'Bounce.easeOut' });
-    });
-    this.time.delayedCall(2400, () => this.finishMatch());
+    this.tweens.add({ targets: title, y: 150, duration: 500, ease: 'Back.easeOut' });
+    this.penTallyText = this.onUi(
+      this.add
+        .text(cx, 232, `${this.home.code} 0 - 0 ${this.away.code}`, { fontFamily: FONT_DISPLAY, fontSize: '52px', color: CSS.gold })
+        .setOrigin(0.5)
+        .setDepth(51)
+        .setStroke('#0e0a24', 6),
+    );
+    this.penTakerText = this.onUi(
+      this.add
+        .text(cx, 318, '', { fontFamily: FONT_DISPLAY, fontSize: '30px', color: CSS.light })
+        .setOrigin(0.5)
+        .setDepth(51)
+        .setStroke('#0e0a24', 4),
+    );
+  }
+
+  // Advance the shootout one kick per cadence tick; hand off after the last (#142).
+  private updatePenReveal(dt: number): void {
+    if (!this.penShootout) return; // reveal not set up yet (the pre-shootout beat)
+    this.penTimer -= dt;
+    if (this.penTimer > 0) return;
+    const kicks = this.penShootout.kicks;
+    if (this.penKickIdx >= kicks.length) {
+      this.finishMatch(); // every kick shown → the existing result path, unchanged
+      return;
+    }
+    this.revealPenKick(kicks[this.penKickIdx]);
+    this.penKickIdx++;
+    this.penTimer = this.penKickIdx >= kicks.length ? 1.6 : this.reduceMotion ? PEN_KICK_CADENCE_RM : PEN_KICK_CADENCE;
+  }
+
+  private revealPenKick(kick: PenKick): void {
+    if (kick.side === 'home') {
+      if (kick.scored) this.penH++;
+    } else if (kick.scored) this.penA++;
+    this.penTallyText?.setText(`${this.home.code} ${this.penH} - ${this.penA} ${this.away.code}`);
+    const code = kick.side === 'home' ? this.home.code : this.away.code;
+    this.penTakerText?.setText(`${code}  ${kick.scored ? 'SCORES!' : 'MISSES'}`).setColor(kick.scored ? CSS.lime : CSS.mid);
+    const isLast = this.penKickIdx + 1 >= this.penShootout!.kicks.length;
+    // crowd hush/roar via the bed (a deterministic sink) + a goal roar or a sigh whistle
+    audio.setCrowd(kick.scored ? 1 : 0.25);
+    audio.play(kick.scored ? 'goal' : 'whistle');
+    if (this.reduceMotion) return; // flourishes / slow-mo suppressed; the tally carries the info
+    if (kick.scored) {
+      this.lastScorer = kick.side; // goalBurst frames the scored goal by lastScorer
+      this.goalBurst(kick.side === 'home' ? this.homeColor : this.awayColor);
+      this.requestZoomPunch();
+      if (isLast) this.requestTimeFx('screamer'); // a beat on the decisive kick
+    } else {
+      this.shake(70, 0.005);
+    }
   }
 
   private penResult?: { home: number; away: number };
+  // staged penalty reveal state (#142), all sim-ticked
+  private penShootout: PenShootout | null = null;
+  private penKickIdx = 0;
+  private penTimer = 0;
+  private penH = 0;
+  private penA = 0;
+  private penTallyText?: Phaser.GameObjects.Text;
+  private penTakerText?: Phaser.GameObjects.Text;
 
   private finishMatch(): void {
     if (this.finished) return;

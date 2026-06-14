@@ -58,4 +58,23 @@ describe('penaltyShootout', () => {
       expect(p.away).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it('the ordered kicks[] reconstruct the tally (no kick lost) and alternate sides (#142)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const p = penaltyShootout(A, B, new RNG(seed));
+      const homeScored = p.kicks.filter((k) => k.side === 'home' && k.scored).length;
+      const awayScored = p.kicks.filter((k) => k.side === 'away' && k.scored).length;
+      expect(homeScored).toBe(p.home); // every home goal is in the list
+      expect(awayScored).toBe(p.away);
+      expect(p.kicks.length % 2).toBe(0); // home/away pairs
+      p.kicks.forEach((k, i) => expect(k.side).toBe(i % 2 === 0 ? 'home' : 'away'));
+    }
+  });
+
+  it('the tally is bit-identical run-to-run for a seed (RNG draw order preserved)', () => {
+    const a = penaltyShootout(A, B, new RNG(7));
+    const b = penaltyShootout(A, B, new RNG(7));
+    expect({ home: a.home, away: a.away }).toEqual({ home: b.home, away: b.away });
+    expect(a.kicks).toEqual(b.kicks);
+  });
 });
