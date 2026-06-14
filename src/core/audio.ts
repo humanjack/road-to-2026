@@ -5,7 +5,7 @@
 
 import { getSave, updateSettings } from './save';
 
-type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win';
+type SfxName = 'ui' | 'kick' | 'pass' | 'shoot' | 'goal' | 'whistle' | 'save' | 'surge' | 'win' | 'tackle' | 'sprint';
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -157,6 +157,15 @@ class AudioManager {
       case 'save':
         this.tone(140, 0.12, 'square', 0.25, 80);
         break;
+      case 'tackle':
+        // a low crunch + thud — the physical "thwock" of a challenge
+        this.tone(110, 0.1, 'square', 0.26, 60);
+        this.noise(0.07, 0.18, 'lowpass', 520);
+        break;
+      case 'sprint':
+        // soft filtered-noise whoosh on the burst (low gain so it doesn't nag)
+        this.noise(0.16, 0.05, 'bandpass', 640);
+        break;
       case 'goal':
         [0, 4, 7, 12].forEach((semi, i) => {
           window.setTimeout(() => this.tone(440 * Math.pow(2, semi / 12), 0.18, 'square', 0.26), i * 70);
@@ -176,6 +185,20 @@ class AudioManager {
         });
         break;
     }
+  }
+
+  // Power-scaled kick/shot "thwock": a harder strike is deeper and louder, and a
+  // screamer (power ~1) adds a sub thump. `power01` is the strike strength 0..1.
+  // Same sfx/mute gating as play().
+  playKick(power01: number): void {
+    if (!this.sfxOn || this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    const p = Math.min(1, Math.max(0, power01));
+    this.tone(185 - p * 45, 0.09 + p * 0.05, 'sine', 0.3 + p * 0.22, 80);
+    this.noise(0.04 + p * 0.03, 0.1 + p * 0.1, 'bandpass', 1300 - p * 450);
+    if (p > 0.72) this.tone(70, 0.18, 'sine', 0.28); // sub thump for a screamer
   }
 
   private midiToFreq(m: number): number {
