@@ -514,6 +514,18 @@ export function ballExposure(ballAhead: number): number {
 }
 
 /**
+ * Carried-ball knock-on streak intensity (#136): 0 when the touch is tight to the
+ * foot (exposure ≤ cue) or the carrier isn't committing to a sprint — so a clean
+ * close-control dribble shows no streak. Otherwise scales 0→1 with exposure, so a
+ * full sprint-touch streaks hardest. Pure + clamped; the render layer is the only
+ * consumer (it never feeds the sim).
+ */
+export function carryStreakAlpha(exposure: number, sprinting: boolean, cue = 0.3): number {
+  if (!sprinting || !Number.isFinite(exposure) || exposure <= cue) return 0;
+  return exposure > 1 ? 1 : exposure;
+}
+
+/**
  * Resolve a tackle attempt. Out of reach → always a miss. In reach, success
  * scales monotonically with closeness, carrier exposure, and defender skill; a
  * win is a clean `steal` when very close/skilled, otherwise the ball pops

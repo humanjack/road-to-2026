@@ -17,6 +17,7 @@ import {
   LOFT_GRAVITY,
   stepStamina,
   carryOffset,
+  carryStreakAlpha,
   easeCarryAngle,
   PLAYER_ACCEL,
   PLAYER_DECEL,
@@ -143,6 +144,7 @@ const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 const ZOOM_PUNCH = 1.18; // snap-zoom multiplier on a firework moment (goal / screamer / tackle) (#127)
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
+const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 // body-bump (#130): a closing speed above the threshold exchanges momentum
 const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
 const BUMP_TRANSFER = 0.4; // fraction of the closing speed exchanged
@@ -2271,19 +2273,34 @@ export class MatchScene extends Phaser.Scene {
     this.ballGfx.setPosition(this.ball.x, this.ball.y - bz); // lifted by height when airborne (#132)
     this.ballGfx.setScale(1 + bz * 0.004); // grows slightly when high
 
-    // ball trail (afterimages) when the ball is loose and moving quickly
+    // ball trail (afterimages): a LOOSE fast ball, OR a sprint knock-on where the
+    // carried ball is pushed well off the foot (#136). The carried ball reports
+    // vx/vy=0, so we sample its world position (which still advances as carryOffset
+    // pushes it ahead) and gate on ballExposure — tight close-control stays clean.
     this.trailGfx.clear();
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
-    if (this.ball.ownerIdx < 0 && speed > 140) {
+    const carrier = this.ball.ownerIdx >= 0 ? this.players[this.ball.ownerIdx] : null;
+    const carryExposure = carrier
+      ? ballExposure(Math.hypot(this.ball.x - carrier.x, this.ball.y - carrier.y))
+      : 0;
+    // streak intensity is gated (sprint + exposure>cue) and reduceMotion-suppressed
+    const streak = carryStreakAlpha(carryExposure, !!carrier && carrier.sprinting && !this.reduceMotion, CARRY_EXPOSE_CUE);
+    const knockOn = streak > 0;
+    const looseFast = this.ball.ownerIdx < 0 && speed > 140;
+    if (looseFast || knockOn) {
       this.ballTrail.push({ x: this.ball.x, y: this.ball.y });
       if (this.ballTrail.length > 8) this.ballTrail.shift();
     } else if (this.ballTrail.length) {
       this.ballTrail.shift();
     }
+    // a knock-on streak tints toward the owner's team colour and fades up with
+    // exposure (a controlled-but-loose touch); a loose ball keeps the neutral tint
+    const trailTint = knockOn ? (carrier!.side === 'home' ? this.homeColor : this.awayColor) : this.ballTint;
+    const trailMax = knockOn ? 0.5 * streak : 0.5;
     this.ballTrail.forEach((t, i) => {
-      const a = (i / this.ballTrail.length) * 0.5;
-      this.trailGfx.fillStyle(this.ballTint, a);
-      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + (i / this.ballTrail.length) * 0.6));
+      const f = i / this.ballTrail.length;
+      this.trailGfx.fillStyle(trailTint, f * trailMax);
+      this.trailGfx.fillCircle(t.x, t.y, BR * (0.4 + f * 0.6));
     });
     // airborne ball shadow on the pitch at the true ground point (#132): the cue the
     // ball is lofted (unreachable by ground players). Renders under reduceMotion too.
@@ -2327,6 +2344,13 @@ export class MatchScene extends Phaser.Scene {
       const ocol = owner.side === 'home' ? this.homeColor : this.awayColor;
       this.dyn.lineStyle(3, ocol, 0.4 + 0.25 * this.pulse);
       this.dyn.strokeCircle(owner.x, owner.y, (PR + 9) * depthScale(owner.y, this.py, this.ph));
+    }
+    // carried-ball exposure cue (#136): a brightening ring on the BALL when the touch
+    // is knocked loose off the foot — the "contest it now" signal. It is INFORMATION,
+    // so unlike the streak it renders under reduceMotion too. Scales with exposure.
+    if (carrier && carryExposure > CARRY_EXPOSE_CUE) {
+      this.dyn.lineStyle(2, C.light, 0.25 + 0.55 * carryExposure);
+      this.dyn.strokeCircle(this.ball.x, this.ball.y, BR + 2 + 4 * carryExposure);
     }
     // active player ring
     const ap = this.players[this.activeIdx];
