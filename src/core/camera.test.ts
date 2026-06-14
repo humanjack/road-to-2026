@@ -127,31 +127,33 @@ describe('followStep (centre space)', () => {
   });
 });
 
-describe('baseZoom', () => {
+const PITCH_W = 2176; // 11v11 pitch width (#183)
+
+describe('baseZoom (retuned for the 11v11 pitch #183)', () => {
   it('maps each level to a distinct, increasing resting zoom', () => {
-    expect(baseZoom('wide')).toBe(1.0);
-    expect(baseZoom('balanced')).toBe(2.0);
-    expect(baseZoom('tight')).toBe(2.4);
+    expect(baseZoom('wide')).toBe(0.56);
+    expect(baseZoom('balanced')).toBe(1.05);
+    expect(baseZoom('tight')).toBe(1.45);
     expect(baseZoom('wide')).toBeLessThan(baseZoom('balanced'));
     expect(baseZoom('balanced')).toBeLessThan(baseZoom('tight'));
   });
 
-  it('balanced (the default) frames roughly the GDD ~55% of the 1152px pitch length', () => {
+  it('balanced (the default) frames roughly ~55% of the 2176px pitch length', () => {
     const visibleWidth = 1280 / baseZoom('balanced');
-    expect(visibleWidth / 1152).toBeGreaterThan(0.5);
-    expect(visibleWidth / 1152).toBeLessThan(0.62);
+    expect(visibleWidth / PITCH_W).toBeGreaterThan(0.5);
+    expect(visibleWidth / PITCH_W).toBeLessThan(0.62);
   });
 
   it('wide shows the full pitch and tight is closer than balanced', () => {
-    expect(1280 / baseZoom('wide')).toBeGreaterThan(1152); // full pitch width in frame
+    expect(1280 / baseZoom('wide')).toBeGreaterThan(PITCH_W); // full pitch width in frame
     expect(1280 / baseZoom('tight')).toBeLessThan(1280 / baseZoom('balanced')); // tighter
   });
 });
 
 describe('framingFits (the CI safety gate)', () => {
-  const LEAD = 90; // CAM_LEAD from MatchScene
+  const LEAD = 160; // CAM_LEAD from MatchScene (scaled for the 11v11 pitch #183)
 
-  it('every zoom level keeps the ball + nearest goal mouth in frame at max lead', () => {
+  it('every zoom level keeps the ball + nearest goal mouth (half 180) in frame at max lead', () => {
     for (const level of ['wide', 'balanced', 'tight'] as const) {
       expect(framingFits(baseZoom(level), LEAD)).toBe(true);
     }
@@ -162,7 +164,7 @@ describe('framingFits (the CI safety gate)', () => {
   });
 
   it('rejects an absurdly tight zoom that would push the goal mouth out of frame', () => {
-    expect(framingFits(4.0, LEAD)).toBe(false); // half-width 160 < 90+9+84
+    expect(framingFits(4.0, LEAD)).toBe(false); // half-width 160 < 160+9+180
   });
 
   it('rejects a non-positive zoom', () => {
@@ -406,8 +408,8 @@ describe('multi-view camera (#176)', () => {
     expect(tac).toEqual({ zoom: 0.85, follow: false, label: VIEW_LABEL.tactical });
   });
 
-  it('the full view shows the whole 1280x720 world at zoom 1 (view == world)', () => {
-    expect(cameraViewConfig('full', 0.85).zoom).toBe(1.0);
+  it('the full view uses the wide resting zoom (frames the whole enlarged pitch)', () => {
+    expect(cameraViewConfig('full', 0.85).zoom).toBe(baseZoom('wide'));
   });
 
   it('fitZoom returns the smaller axis ratio so the whole rect fits', () => {

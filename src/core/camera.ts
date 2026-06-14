@@ -102,19 +102,25 @@ function clampCentre(centre: number, view: number, min: number, size: number): n
 export type ZoomLevel = 'wide' | 'balanced' | 'tight';
 
 /**
- * Resting broadcast zoom for each player-chosen level. WIDE (1.0) frames the full
- * pitch (the classic flat view); BALANCED (2.0) is the default broadcast framing —
- * ~55% of the pitch length, the GDD look; TIGHT (2.4) is noticeably closer.
+ * Resting broadcast zoom for each player-chosen level, retuned for the full 11v11
+ * pitch (#183). At zoom Z the visible world width is GAME_W / Z (1280 / Z), so for
+ * the 2176px pitch:
+ *   WIDE     0.56 → 1280/0.56 ≈ 2285px ≥ 2176 → the whole pitch edge-to-edge
+ *   BALANCED 1.05 → 1280/1.05 ≈ 1219px ≈ 56% of the pitch → default broadcast
+ *   TIGHT    1.45 → 1280/1.45 ≈  883px ≈ 41% → close action cam
+ * (On the old 5v5 1152px pitch these were 1.0 / 2.0 / 2.4.) Zoom < 1 for WIDE
+ * because the pitch is now far wider than the 1280px canvas. If the pitch width
+ * changes, scale these so WIDE still satisfies 1280/Z ≥ pitchWidth.
  */
 export function baseZoom(level: ZoomLevel): number {
   switch (level) {
     case 'wide':
-      return 1.0;
+      return 0.56;
     case 'tight':
-      return 2.4;
+      return 1.45;
     case 'balanced':
     default:
-      return 2.0;
+      return 1.05;
   }
 }
 
@@ -124,7 +130,7 @@ export function baseZoom(level: ZoomLevel): number {
  * visible half-width? Half-width at z is (gameW / z) / 2. A hard predicate (not a
  * manual eyeball) so a too-tight zoom can fail CI.
  */
-export function framingFits(z: number, lead: number, gameW = 1280, ballR = 9, halfGoalMouth = 84): boolean {
+export function framingFits(z: number, lead: number, gameW = 1280, ballR = 9, halfGoalMouth = 180): boolean {
   if (!(z > 0)) return false;
   const visibleHalfWidth = gameW / z / 2;
   return visibleHalfWidth >= lead + ballR + halfGoalMouth;

@@ -40,7 +40,6 @@ import {
   runActive,
   keeperTarget,
   saveOutcome,
-  SAVE_REACH,
   chooseSwitchTarget,
   assignMarks,
   markPoint,
@@ -64,6 +63,7 @@ import {
 } from '../core/movement';
 import { audio, crowdLevelFromSurge, isClosingPhase, musicIntensity } from '../core/audio';
 import { gaitPose, kickPose, receivePose, selectPose, chooseCelebrant, depthScale } from '../core/poses';
+import { resolveFormation, type Role } from '../core/formations';
 import {
   cameraTarget,
   followStep,
@@ -98,7 +98,6 @@ export interface MatchInit {
 }
 
 type Side = 'home' | 'away';
-type Role = 'GK' | 'DEF' | 'MID' | 'FWD';
 type PowerType = 'boost' | 'freeze' | 'magnet';
 
 const POWERUPS: Record<PowerType, { label: string; color: number; icon: string; dur: number }> = {
@@ -164,7 +163,7 @@ const CHARGE_MS = 700; // shot charge window — shared by power calc + charge-b
 // The resting zoom is the player's ZOOM setting (baseZoom() in core/camera); a
 // follow camera over a world == viewport is inert, so even WIDE keeps the world
 // at least the viewport size. Firework moments add a brief snap-zoom punch.
-const CAM_LEAD = 90; // px the framing leads ahead of the carrier, in the attack direction
+const CAM_LEAD = 160; // px the framing leads ahead of the carrier, in the attack direction (scaled for the 11v11 pitch #183)
 const CAM_LERP = 0.12; // follow smoothing (the GDD broadcast-arc follow-speed)
 const CAM_LERP_RM = 0.05; // reduce-motion: heavily damped, steady framing (no twitch)
 const ZOOM_PUNCH = 1.15; // snap-zoom on a firework moment — goal / screamer (#127; trimmed from 1.18 #shake-polish)
@@ -178,13 +177,37 @@ const SHAKE_REFRACTORY = 0.26; // sec a new (non-priority) shake is suppressed a
 // small vertical lead that anticipates near/far runs, and a deadzone so a jostled
 // ball can't jitter the frame. All render-side (functions of sim output / scroll).
 const CAM_VLEAD_SCALE = 0.22; // vertical lead = carrier/ball vy * this (anticipate near/far runs)
-const CAM_VLEAD_CAP = 70; // px clamp on the vertical lead so a sprint/shot can't fling the frame
+const CAM_VLEAD_CAP = 130; // px clamp on the vertical lead so a sprint/shot can't fling the frame (scaled for the 11v11 pitch #183)
 const CAM_DEADZONE = 26; // px half-box the focus may roam before the frame follows (anti-jitter)
 const CAM_DEADZONE_RM = 40; // reduce-motion: a larger steady hold (an even calmer frame)
 const PARALLAX_FACTOR = 0.6; // stadium backdrop scrolls at 60% of the turf → broadcast depth
 const PARALLAX_FACTOR_RM = 0.82; // reduce-motion: a much subtler depth differential
 const PARALLAX_MARGIN = 360; // px the backdrop over-covers the world so a pan never reveals void
-const TACTICAL_MARGIN = 130; // px of stand/surround revealed around the pitch in the TACTICAL view (#176)
+const TACTICAL_MARGIN = 160; // px of stand/surround revealed around the pitch in the TACTICAL view (#176; scaled #183)
+// World + pitch geometry (#183, enlarged for full 11v11). The PITCH is a rect
+// inside a slightly larger WORLD (run-off + stands all around). The camera BOUNDS
+// use the world; all viewport↔world conversions keep using GAME_W/GAME_H (the
+// fixed 1280×720 canvas the HUD/uiCam live on). The pitch is centred in the world.
+//
+// PITCH-SCALE RATIONALE (#183): the pitch grew from the old 5v5 1152×560 to
+// 2176×1216 — a length factor of ~1.89× (PITCH_W/1152). Everything that is a
+// distance ON the pitch is scaled by that factor to preserve the 5v5 feel as a
+// fraction of the pitch, so the game plays the same shape at 11v11 scale:
+//   • goalH 168→360 (holds the ~0.30-of-height arcade ratio)
+//   • penalty box depth 120→232, centre circle 70→136 (drawPitch)
+//   • CAM_LEAD 90→160, CAM_VLEAD_CAP 70→130 (broadcast framing)
+//   • off-ball AI ranges expressed directly as fractions of `pw` (spawn/AI below)
+//   • ball drag 0.34→0.57/s so a free ball rolls ~1.9× further (updateBall)
+//   • aiShootRange / SAVE_REACH scaled ~1.89× (DIFF table / diving save)
+// These are proportional scales of empirically-tuned 5v5 values, not new tunings.
+const PITCH_X = 112;
+const PITCH_Y = 112;
+const PITCH_W = 2176; // ~1.89× the old 1152 — realistic spacing for 22 players
+const PITCH_H = 1216; // ~2.17× the old 560; aspect ~1.79 (closer to a real 105×68 pitch)
+const GOAL_H = 360; // mouth height — old 168/560 ≈ 0.30; new 360/1216 ≈ 0.296 (ratio held)
+const WORLD_MARGIN = 112; // run-off/stand strip between the pitch and the world edge
+const WORLD_W = PITCH_X + PITCH_W + WORLD_MARGIN; // 2400
+const WORLD_H = PITCH_Y + PITCH_H + WORLD_MARGIN; // 1440
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // run-cycle phase rate (rad/s) ≈ the old time.now*0.018 cadence (#138)
@@ -206,9 +229,11 @@ const PEN_KICK_CADENCE_RM = 0.6; // reduce-motion: snappier (no flourish to hold
 const CHIP_CHARGE = 0.18; // a shot released below this charge chips (lofts) instead (#132)
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
-  casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
-  pro: { aiSpeed: 1.0, aiShootRange: 270, aiAccuracy: 0.72, userBoost: 1.0 },
-  legend: { aiSpeed: 1.12, aiShootRange: 320, aiAccuracy: 0.86, userBoost: 0.95 },
+  // aiShootRange (px from goal at which the AI shoots) scaled ~1.9× for the 11v11
+  // pitch (#183) so the AI still shoots from a sensible fraction of the pitch.
+  casual: { aiSpeed: 0.86, aiShootRange: 435, aiAccuracy: 0.55, userBoost: 1.08 },
+  pro: { aiSpeed: 1.0, aiShootRange: 510, aiAccuracy: 0.72, userBoost: 1.0 },
+  legend: { aiSpeed: 1.12, aiShootRange: 605, aiAccuracy: 0.86, userBoost: 0.95 },
 };
 
 export class MatchScene extends Phaser.Scene {
@@ -220,12 +245,12 @@ export class MatchScene extends Phaser.Scene {
   private rng!: RNG;
   private diff = DIFF.pro;
 
-  // pitch geometry
-  private px = 64;
-  private py = 96;
-  private pw = 1152;
-  private ph = 560;
-  private goalH = 168;
+  // pitch geometry (#183: enlarged for 11v11 — see PITCH_*/WORLD_* constants)
+  private px = PITCH_X;
+  private py = PITCH_Y;
+  private pw = PITCH_W;
+  private ph = PITCH_H;
+  private goalH = GOAL_H;
 
   private players: Player[] = [];
   private ball = { x: 0, y: 0, vx: 0, vy: 0, ownerIdx: -1, curve: 0, z: 0, vz: 0, grounded: true };
@@ -338,7 +363,7 @@ export class MatchScene extends Phaser.Scene {
   private uiCam!: Phaser.Cameras.Scene2D.Camera;
   private camTarget = { x: 0, y: 0 };
   private camScratch = { x: 0, y: 0 };
-  private worldBounds = { x: 0, y: 0, w: GAME_W, h: GAME_H };
+  private worldBounds = { x: 0, y: 0, w: WORLD_W, h: WORLD_H };
   private camFollow = true;
   private restZoom = 2.0; // resting broadcast zoom from the ZOOM setting (#127)
   private zoomCur = 2.0; // live zoom, eased back to restZoom after a snap-zoom punch
@@ -400,7 +425,7 @@ export class MatchScene extends Phaser.Scene {
     this.restZoom = baseZoom(getSave().settings.zoomLevel); // ZOOM setting → resting framing (#127)
     this.zoomCur = this.restZoom;
     this.uiCam = this.cameras.add(0, 0, GAME_W, GAME_H);
-    this.cameras.main.setBounds(0, 0, GAME_W, GAME_H);
+    this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
     this.cameras.main.setZoom(this.restZoom);
     this.camFollow = true;
     this.centerCameraOnPitch();
@@ -514,7 +539,7 @@ export class MatchScene extends Phaser.Scene {
       // Re-arm the broadcast follow at the new resting zoom. Restore the world
       // bounds (TACTICAL may have widened them) and snap the live zoom so there's
       // no lingering snap-zoom punch fighting the change.
-      cam.setBounds(0, 0, GAME_W, GAME_H);
+      cam.setBounds(0, 0, WORLD_W, WORLD_H);
       this.restZoom = cfg.zoom;
       this.zoomCur = cfg.zoom;
       this.camFollow = true;
@@ -622,31 +647,32 @@ export class MatchScene extends Phaser.Scene {
     // depth/lighting (drawn once, under the crisp line work): a soft light
     // top-left, a soft shade bottom-right, and a faint colour glow from each
     // goal end. Kept very low alpha so players/ball stay perfectly readable.
-    this.softGlow(g, this.px + this.pw * 0.3, this.py + this.ph * 0.25, 280, 0xffffff, 0.05);
-    this.softGlow(g, this.px + this.pw * 0.75, this.py + this.ph * 0.8, 300, C.deep, 0.1);
-    this.softGlow(g, this.px + 50, this.py + this.ph / 2, 200, this.homeColor, 0.06);
-    this.softGlow(g, this.px + this.pw - 50, this.py + this.ph / 2, 200, this.awayColor, 0.06);
+    this.softGlow(g, this.px + this.pw * 0.3, this.py + this.ph * 0.25, 520, 0xffffff, 0.05);
+    this.softGlow(g, this.px + this.pw * 0.75, this.py + this.ph * 0.8, 560, C.deep, 0.1);
+    this.softGlow(g, this.px + 95, this.py + this.ph / 2, 380, this.homeColor, 0.06);
+    this.softGlow(g, this.px + this.pw - 95, this.py + this.ph / 2, 380, this.awayColor, 0.06);
 
     g.lineStyle(3, 0xffffff, 0.68); // crisper markings on the brighter turf (#128)
     g.strokeRect(this.px, this.py, this.pw, this.ph);
     g.lineBetween(this.px + this.pw / 2, this.py, this.px + this.pw / 2, this.py + this.ph);
-    g.strokeCircle(this.px + this.pw / 2, this.py + this.ph / 2, 70);
+    g.strokeCircle(this.px + this.pw / 2, this.py + this.ph / 2, 136);
     g.fillStyle(0xffffff, 0.8);
-    g.fillCircle(this.px + this.pw / 2, this.py + this.ph / 2, 4);
-    // goals + boxes
+    g.fillCircle(this.px + this.pw / 2, this.py + this.ph / 2, 5);
+    // goals + penalty boxes (depth + height scaled for the 11v11 pitch #183)
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
-    const boxH = this.goalH + 120;
+    const boxDepth = 232;
+    const boxH = this.goalH + 260;
     const byy = this.py + this.ph / 2 - boxH / 2;
-    g.strokeRect(this.px, byy, 120, boxH);
-    g.strokeRect(this.px + this.pw - 120, byy, 120, boxH);
+    g.strokeRect(this.px, byy, boxDepth, boxH);
+    g.strokeRect(this.px + this.pw - boxDepth, byy, boxDepth, boxH);
     // goal frame (#135): the mouth line + post caps top & bottom so the goal reads
     // as a structure (the live net mesh is drawn separately in netGfx).
     for (const gx of [this.px, this.px + this.pw]) {
       g.lineStyle(5, C.gold, 0.95);
       g.lineBetween(gx, gy0, gx, gy0 + this.goalH);
       g.fillStyle(C.gold, 1);
-      g.fillCircle(gx, gy0, 5);
-      g.fillCircle(gx, gy0 + this.goalH, 5);
+      g.fillCircle(gx, gy0, 7);
+      g.fillCircle(gx, gy0 + this.goalH, 7);
     }
   }
 
@@ -744,8 +770,8 @@ export class MatchScene extends Phaser.Scene {
     const M = PARALLAX_MARGIN;
     const ox = -M;
     const oy = -M;
-    const ow = GAME_W + 2 * M;
-    const oh = GAME_H + 2 * M;
+    const ow = WORLD_W + 2 * M; // cover the whole enlarged world + lag margin (#183)
+    const oh = WORLD_H + 2 * M;
     // deep backdrop fills the whole over-rect (was the full-screen fill in drawPitch)
     g.fillStyle(C.indigo, 1);
     g.fillRect(ox, oy, ow, oh);
@@ -757,14 +783,16 @@ export class MatchScene extends Phaser.Scene {
     g.fillRect(ox, bottomY, ow, oy + oh - bottomY); // bottom stand (down to the over-bottom edge)
     g.fillRect(ox, oy, this.px - ox, oh); // left stand
     g.fillRect(rightX, oy, ox + ow - rightX, oh); // right stand
-    // faint crowd speckle on the top + bottom stands (two rows each)
+    // faint crowd speckle on the top + bottom stands (two rows each), spanning the
+    // full world width — anchored just inside the top stand and just below the pitch.
     g.fillStyle(0x9aa7c7, 0.12);
-    for (let i = 0; i < 64; i++) {
+    const speckles = Math.ceil(WORLD_W / 20) + 2;
+    for (let i = 0; i < speckles; i++) {
       const x = 14 + i * 20 + (i % 3) * 4; // deterministic jitter by index
-      if (x > GAME_W - 6) continue;
-      g.fillCircle(x, 22 + (i % 2) * 18, 2.2);
-      const yb = bottomY + 18 + (i % 2) * 18;
-      if (yb < GAME_H - 6) g.fillCircle(x, yb, 2.2);
+      if (x > WORLD_W - 6) continue;
+      g.fillCircle(x, this.py - 90 + (i % 2) * 18, 2.2);
+      const yb = bottomY + 28 + (i % 2) * 18;
+      if (yb < WORLD_H - 6) g.fillCircle(x, yb, 2.2);
     }
   }
 
@@ -860,23 +888,21 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private spawnPlayers(): void {
-    // formation as fractions of pitch (home attacks +x)
-    const form: { role: Role; fx: number; fy: number }[] = [
-      { role: 'GK', fx: 0.05, fy: 0.5 },
-      { role: 'DEF', fx: 0.24, fy: 0.3 },
-      { role: 'DEF', fx: 0.24, fy: 0.7 },
-      { role: 'MID', fx: 0.46, fy: 0.5 },
-      { role: 'FWD', fx: 0.66, fy: 0.42 },
-    ];
-    form.forEach((f, i) => {
+    // Full 11-a-side (#183): each side fields its own formation shape (from the
+    // team's formation label, fractions of pitch, home attacks +x). The away side
+    // mirrors its slots to 1−fx, and its indices follow the home block so player
+    // idx stays unique and side-contiguous (home 0..n-1, away n..2n-1).
+    const homeForm = resolveFormation(this.home.formation);
+    const awayForm = resolveFormation(this.away.formation);
+    homeForm.forEach((f, i) => {
       const hx = this.px + f.fx * this.pw;
       const hy = this.py + f.fy * this.ph;
       this.players.push(this.makePlayer('home', f.role, hx, hy, i));
     });
-    form.forEach((f, i) => {
+    awayForm.forEach((f, i) => {
       const hx = this.px + (1 - f.fx) * this.pw;
       const hy = this.py + f.fy * this.ph;
-      this.players.push(this.makePlayer('away', f.role, hx, hy, 5 + i));
+      this.players.push(this.makePlayer('away', f.role, hx, hy, homeForm.length + i));
     });
   }
 
@@ -1771,7 +1797,7 @@ export class MatchScene extends Phaser.Scene {
       if (owns) {
         // dribble toward opponent goal; shoot if in range; pass if pressured
         const distGoal = Math.abs(p.x - oppGoalX);
-        const pressed = this.nearestOpponentDist(p) < 70;
+        const pressed = this.nearestOpponentDist(p) < this.pw * 0.06;
         if (distGoal < this.diff.aiShootRange) {
           this.aiShoot(p, oppGoalX, oppGoalY);
           return;
@@ -1799,22 +1825,24 @@ export class MatchScene extends Phaser.Scene {
           // staggered depth run ahead of the ball (a through-ball target, #97),
           // dropping to a high line between runs so the defence can recover/react
           if (runActive(this.elapsed, p.phase)) {
-            const r = forwardRunTarget(p.hy, this.ball.x, attackDir, this.px, this.px + this.pw, 200);
+            // off-ball AI distances scale with pitch length (#183) so formation
+            // shape holds on the larger 11v11 pitch instead of bunching.
+            const r = forwardRunTarget(p.hy, this.ball.x, attackDir, this.px, this.px + this.pw, this.pw * 0.17);
             tx = r.x;
             ty = r.y;
           } else {
-            tx = Phaser.Math.Clamp(this.ball.x + attackDir * 70, this.px + 40, this.px + this.pw - 40);
+            tx = Phaser.Math.Clamp(this.ball.x + attackDir * this.pw * 0.032, this.px + this.pw * 0.018, this.px + this.pw - this.pw * 0.018);
             ty = p.hy;
           }
         } else if (p.role === 'MID') {
           // short support angle goal-side of the carrier (a safe outlet, #96)
-          const s = supportTarget(carrier.x, carrier.y, p.hy, attackDir, 90);
+          const s = supportTarget(carrier.x, carrier.y, p.hy, attackDir, this.pw * 0.078);
           tx = s.x;
           ty = s.y;
         } else {
           // defenders push the line up modestly + shift ball-side, but stay home-ish
           const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw;
-          tx = p.hx + attackDir * 40 + ballAdvance * 70 * attackDir;
+          tx = p.hx + attackDir * this.pw * 0.018 + ballAdvance * this.pw * 0.032 * attackDir;
           ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.2;
         }
       } else if (markTarget[i]) {
@@ -1825,7 +1853,7 @@ export class MatchScene extends Phaser.Scene {
         // OUT OF POSSESSION, spare defender: hold defensive shape — drop a touch
         // and shift to the ball side (covers central space in front of goal)
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
-        tx = p.hx + attackDir * -10 + ballAdvance * 90 * attackDir;
+        tx = p.hx + attackDir * -this.pw * 0.0045 + ballAdvance * this.pw * 0.04 * attackDir;
         ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.18;
       }
 
@@ -1839,7 +1867,7 @@ export class MatchScene extends Phaser.Scene {
     // Caught it: hold briefly, then distribute upfield (roll/throw to a mate).
     if (owns) {
       p.ballHold += dt;
-      const goalX = p.side === 'home' ? this.px + 24 : this.px + this.pw - 24;
+      const goalX = p.side === 'home' ? this.px + 46 : this.px + this.pw - 46;
       this.steer(p, goalX, Phaser.Math.Clamp(this.ball.y, cy - this.goalH / 2, cy + this.goalH / 2), this.playerSpeed(p, p.side) * 0.9, dt);
       if (p.ballHold > 0.55) {
         this.aiPassToTeammate(p); // distribution: best forward outlet
@@ -1851,15 +1879,17 @@ export class MatchScene extends Phaser.Scene {
     const goalLineX = p.side === 'home' ? this.px : this.px + this.pw;
     const comeOutSign = p.side === 'home' ? 1 : -1;
     // rush out to smother a very close ball in our third; otherwise hold the angle
-    const closeBall = dist(p.x, p.y, this.ball.x, this.ball.y) < 88;
-    const inOurThird = p.side === 'home' ? this.ball.x < this.px + 200 : this.ball.x > this.px + this.pw - 200;
+    const closeBall = dist(p.x, p.y, this.ball.x, this.ball.y) < this.pw * 0.076;
+    const inOurThird = p.side === 'home' ? this.ball.x < this.px + this.pw / 3 : this.ball.x > this.px + this.pw - this.pw / 3;
     let targetX: number;
     let targetY: number;
     if (closeBall && inOurThird) {
       targetX = this.ball.x;
       targetY = this.ball.y;
     } else {
-      const t = keeperTarget(this.ball.x, this.ball.y, goalLineX, cy, comeOutSign, this.goalH);
+      // keeper come-out range scales with the pitch (#183): maxOut ≈ 6.5% of the
+      // length, reactDist ≈ 28% — keeps the same shot-stopping geometry as 5v5.
+      const t = keeperTarget(this.ball.x, this.ball.y, goalLineX, cy, comeOutSign, this.goalH, this.pw * 0.065, this.pw * 0.28);
       targetX = t.x;
       targetY = t.y;
     }
@@ -1875,6 +1905,11 @@ export class MatchScene extends Phaser.Scene {
     if (!this.ball.grounded) return; // a lofted ball clears a ground keeper (#132)
     const speed = Math.hypot(this.ball.vx, this.ball.vy);
     if (speed < 220) return; // only shots/driven balls trigger a diving save
+    // Dive reach + lunge scale with the pitch (#183): SAVE_REACH was 52px on the
+    // 1152px 5v5 pitch (≈0.045·pw); the goal mouth grew 2.14× (168→360), so a fixed
+    // 52px reach would leave the keeper stranded for far-post/wide shots. Scale the
+    // reach AND the vertical lunge cap so shot-stopping geometry matches 5v5.
+    const reach = this.pw * 0.045; // ≈98px on the 11v11 pitch
     for (let i = 0; i < this.players.length; i++) {
       const k = this.players[i];
       if (k.role !== 'GK') continue;
@@ -1882,13 +1917,13 @@ export class MatchScene extends Phaser.Scene {
       const towardOwnGoal = k.side === 'home' ? this.ball.vx < 0 : this.ball.vx > 0;
       if (!towardOwnGoal) continue;
       const d = dist(k.x, k.y, this.ball.x, this.ball.y);
-      if (d > SAVE_REACH) continue;
+      if (d > reach) continue;
       // dive: lunge toward the ball's line
       const dy = this.ball.y - k.y;
-      k.vy += Math.sign(dy) * Math.min(220, Math.abs(dy) * 8);
+      k.vy += Math.sign(dy) * Math.min(420, Math.abs(dy) * 8);
       k.diveT = 0.45; // keeper dive pose (#137)
       const reaction = this.keeperReaction(k.side);
-      const res = saveOutcome(d, SAVE_REACH, reaction, this.rng.next());
+      const res = saveOutcome(d, reach, reaction, this.rng.next());
       if (res === 'catch') {
         this.ball.ownerIdx = i;
         this.ball.vx = 0;
@@ -2149,10 +2184,13 @@ export class MatchScene extends Phaser.Scene {
 
     if (this.ball.ownerIdx >= 0) return;
 
-    // free ball motion + drag
+    // free ball motion + drag. Drag was loosened from 0.34 to 0.57 per second for
+    // the 11v11 pitch (#183): a free ball now rolls ~1.9× further (matching the
+    // pitch enlargement), so every pass/shot power formula keeps the SAME reach as
+    // a fraction of the pitch as it had at 5v5 — long balls still carry.
     this.ball.x += this.ball.vx * dt;
     this.ball.y += this.ball.vy * dt;
-    const drag = Math.pow(0.34, dt);
+    const drag = Math.pow(0.57, dt);
     this.ball.vx *= drag;
     this.ball.vy *= drag;
     // in-flight curve from a sweet-window release (#133): a decaying lateral accel,

@@ -782,6 +782,9 @@ export function keeperTarget(
   goalCenterY: number,
   comeOutSign: number, // +1 if the keeper advances toward +x, -1 toward -x
   goalH: number,
+  // NOTE (#183): these defaults are the 5v5-pitch reference (used by the unit
+  // tests). Live callers scale them to the pitch (MatchScene passes pw·0.065 /
+  // pw·0.28) — don't rely on the defaults for an enlarged pitch.
   maxOut = 78,
   reactDist = 340,
 ): { x: number; y: number } {
