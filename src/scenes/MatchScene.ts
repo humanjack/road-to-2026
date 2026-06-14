@@ -10,6 +10,8 @@ import {
   approachVelocity,
   turnBleed,
   resolveBump,
+  postBounce,
+  rippleAmplitude,
   stepStamina,
   carryOffset,
   easeCarryAngle,
@@ -138,6 +140,9 @@ const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const BUMP_THRESHOLD = 80; // px/s closing along the contact normal to register a barge
 const BUMP_TRANSFER = 0.4; // fraction of the closing speed exchanged
 const BUMP_CAP = 320; // clamp post-bump speed so a pile-up can't explode
+// goal posts (#135): collidable woodwork at the mouth corners
+const POST_R = 4; // post collision radius (px)
+const POST_RESTITUTION = 0.6; // a damped clang off the woodwork
 
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   casual: { aiSpeed: 0.86, aiShootRange: 230, aiAccuracy: 0.55, userBoost: 1.08 },
@@ -220,6 +225,17 @@ export class MatchScene extends Phaser.Scene {
   private bannerText!: Phaser.GameObjects.Text;
   private ballGfx!: Phaser.GameObjects.Arc;
   private trailGfx!: Phaser.GameObjects.Graphics;
+  private netGfx!: Phaser.GameObjects.Graphics; // goal net mesh (#135)
+  // goal geometry (#135), computed once
+  private goalGy0 = 0;
+  private goalGy1 = 0;
+  private posts: { x: number; y: number }[] = [];
+  private postScratch = { vx: 0, vy: 0 };
+  private netGoals: { x: number; dir: number; side: Side }[] = [];
+  // net ripple state (the most recent goal)
+  private rippleSide: Side = 'home';
+  private rippleY = 0;
+  private rippleAge = 999; // seconds since the last cross (>= settle ⇒ no ripple)
   private vignette!: Phaser.GameObjects.Graphics;
   private ballTrail: { x: number; y: number }[] = [];
   private reduceMotion = false;
@@ -297,6 +313,8 @@ export class MatchScene extends Phaser.Scene {
     this.camFollow = true;
     this.centerCameraOnPitch();
 
+    this.computeGoalGeometry(); // #135 — drawPitch + post collision share this geometry
+    this.rippleAge = 999; // fresh match: no active net ripple
     this.drawPitch();
     this.buildHud();
     this.spawnPlayers();
@@ -312,6 +330,7 @@ export class MatchScene extends Phaser.Scene {
     this.autoSwitch = settings.defensiveSwitch !== 'manual';
     this.ballTrail = [];
     this.trailGfx = this.add.graphics().setDepth(14);
+    this.netGfx = this.onWorld(this.add.graphics().setDepth(6)); // goal net, behind players (#135)
     this.shadowGfx = this.add.graphics().setDepth(9);
     this.bodyGfx = this.add.graphics().setDepth(10);
     this.dyn = this.add.graphics().setDepth(20);
@@ -438,10 +457,91 @@ export class MatchScene extends Phaser.Scene {
     const byy = this.py + this.ph / 2 - boxH / 2;
     g.strokeRect(this.px, byy, 120, boxH);
     g.strokeRect(this.px + this.pw - 120, byy, 120, boxH);
-    // goal mouths
-    g.lineStyle(6, C.gold, 0.95);
-    g.lineBetween(this.px - 2, gy0, this.px - 2, gy0 + this.goalH);
-    g.lineBetween(this.px + this.pw + 2, gy0, this.px + this.pw + 2, gy0 + this.goalH);
+    // goal frame (#135): the mouth line + post caps top & bottom so the goal reads
+    // as a structure (the live net mesh is drawn separately in netGfx).
+    for (const gx of [this.px, this.px + this.pw]) {
+      g.lineStyle(5, C.gold, 0.95);
+      g.lineBetween(gx, gy0, gx, gy0 + this.goalH);
+      g.fillStyle(C.gold, 1);
+      g.fillCircle(gx, gy0, 5);
+      g.fillCircle(gx, gy0 + this.goalH, 5);
+    }
+  }
+
+  // Goal geometry (#135), computed once: mouth top/bottom + the four post objects.
+  private computeGoalGeometry(): void {
+    this.goalGy0 = this.py + this.ph / 2 - this.goalH / 2;
+    this.goalGy1 = this.goalGy0 + this.goalH;
+    this.posts = [
+      { x: this.px, y: this.goalGy0 },
+      { x: this.px, y: this.goalGy1 },
+      { x: this.px + this.pw, y: this.goalGy0 },
+      { x: this.px + this.pw, y: this.goalGy1 },
+    ];
+    this.netGoals = [
+      { x: this.px, dir: -1, side: 'away' },
+      { x: this.px + this.pw, dir: 1, side: 'home' },
+    ];
+  }
+
+  // The goal net mesh, redrawn each frame (cheap, fixed vertex count). When a
+  // ripple is active for a goal, its back panel bows outward near the entry y and
+  // settles over ~0.5s. Static under reduceMotion. No per-frame allocation.
+  private drawNet(): void {
+    const g = this.netGfx;
+    g.clear();
+    const depth = 26;
+    const amp = rippleAmplitude(this.rippleAge);
+    for (const goal of this.netGoals) {
+      const rippleHere = amp > 0 && this.rippleSide === goal.side && !this.reduceMotion;
+      const wobble = rippleHere ? amp * (0.6 + 0.4 * Math.sin(this.rippleAge * 26)) : 0;
+      const base = goal.x + goal.dir * depth;
+      g.lineStyle(1, 0xffffff, 0.22);
+      const rows = 6;
+      for (let r = 0; r <= rows; r++) {
+        const yy = this.goalGy0 + (this.goalGy1 - this.goalGy0) * (r / rows);
+        const bx = rippleHere ? base + goal.dir * wobble * Math.exp(-Math.abs(yy - this.rippleY) / 45) : base;
+        g.lineBetween(goal.x, yy, bx, yy);
+      }
+      const cols = 4;
+      for (let c = 1; c <= cols; c++) {
+        const xx = goal.x + goal.dir * depth * (c / cols);
+        g.lineBetween(xx, this.goalGy0, xx, this.goalGy1);
+      }
+    }
+  }
+
+  // Reflect the ball off a goal post (#135). Runs BEFORE the goal-mouth score
+  // check so a post hit is never a goal. Pure/deterministic; fires the off-post
+  // near-miss reward (Surge + banner + woodwork sfx).
+  private tryPostBounce(): boolean {
+    const hitDist = BR + POST_R;
+    for (const post of this.posts) {
+      const r = postBounce(this.ball.x, this.ball.y, this.ball.vx, this.ball.vy, post.x, post.y, hitDist, POST_RESTITUTION, this.postScratch);
+      if (!r) continue;
+      this.ball.vx = r.vx;
+      this.ball.vy = r.vy;
+      // shove the ball just clear of the post so it can't re-trigger next step
+      const dx = this.ball.x - post.x;
+      const dy = this.ball.y - post.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.ball.x = post.x + (dx / d) * (hitDist + 0.5);
+      this.ball.y = post.y + (dy / d) * (hitDist + 0.5);
+      this.onPostHit(post.x < this.px + this.pw / 2 ? 'away' : 'home');
+      return true;
+    }
+    return false;
+  }
+
+  private onPostHit(attackSide: Side): void {
+    this.lastKickIdx = -1; // anyone can chase the rebound
+    this.kickCooldown = 0.08;
+    this.shake(90, 0.008);
+    audio.playImpact('post', shotPower01(Math.hypot(this.ball.vx, this.ball.vy)));
+    this.showBanner('OFF THE POST!', C.gold, 600);
+    // near-miss Surge reward (GDD §2.7) for the attacking side
+    if (attackSide === 'home') this.surgeHome = Math.min(100, this.surgeHome + 5);
+    else this.surgeAway = Math.min(100, this.surgeAway + 5);
   }
 
   // Stacked translucent circles forming a soft radial glow (bright centre,
@@ -1794,6 +1894,10 @@ export class MatchScene extends Phaser.Scene {
     this.resolveKeeperSaves();
     if (this.ball.ownerIdx >= 0) return; // caught — stop free motion this frame
 
+    // posts as objects (#135): clang off the woodwork BEFORE the goal-mouth check,
+    // so a post hit is never miscounted as a goal. Pure, in-sim, deterministic.
+    if (this.tryPostBounce()) return;
+
     // goal lines
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
     const gy1 = gy0 + this.goalH;
@@ -1821,6 +1925,10 @@ export class MatchScene extends Phaser.Scene {
   private scoreGoal(side: Side): void {
     if (this.state !== 'play') return;
     this.lastScorer = side;
+    // ripple the scored goal's net from the ball's entry point (#135)
+    this.rippleSide = side;
+    this.rippleY = Phaser.Math.Clamp(this.ball.y, this.goalGy0, this.goalGy1);
+    this.rippleAge = 0;
     this.requestTimeFx('goal'); // freeze + slow-mo on the net-hit (the firework moment)
     this.requestZoomPunch(); // camera punch-in on the goal (#127)
     // the scorer (or nearest scoring-side outfielder) celebrates through the goal freeze (#137)
@@ -2050,6 +2158,10 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private renderEntities(): void {
+    // goal net mesh + ripple (#135): cheap fixed-vertex redraw; the ripple age
+    // advances on render time (the post collision is in-sim, this is presentation)
+    this.rippleAge += this.realDtSec;
+    this.drawNet();
     // Players are redrawn every frame: an upright shadow pass (depth 9) under a
     // y-sorted body pass (depth 10), so nearer (lower) figures overlap farther
     // ones. Both batch into one Graphics each — trivial for 10 players.

@@ -184,6 +184,56 @@ export function resolveBump(
   return out;
 }
 
+// --- goal frame (collidable posts + net ripple) ----------------------------
+//
+// The goal is a structure, not a line: a ball clipping a post clangs off the
+// woodwork (a near-miss), and the net behind the mouth ripples when the ball
+// crosses. Both derive from ball state + a render age — the COLLISION is pure
+// and deterministic; the ripple is a presentation envelope.
+
+export interface PostHit {
+  vx: number;
+  vy: number;
+}
+
+/**
+ * Reflect the ball off a circular post when it's within `hitDist` and moving
+ * toward it; returns the new velocity, or null for no contact / moving away.
+ * Deterministic from ball state. `restitution` < 1 is a slightly damped clang.
+ */
+export function postBounce(
+  ballX: number,
+  ballY: number,
+  vx: number,
+  vy: number,
+  postX: number,
+  postY: number,
+  hitDist: number,
+  restitution: number,
+  out: PostHit = { vx: 0, vy: 0 },
+): PostHit | null {
+  const dx = ballX - postX;
+  const dy = ballY - postY;
+  const d = Math.hypot(dx, dy);
+  if (d >= hitDist || d < 1e-6) return null; // not touching
+  const nx = dx / d; // post → ball normal
+  const ny = dy / d;
+  const vn = vx * nx + vy * ny;
+  if (vn >= 0) return null; // moving away from the post — no bounce
+  out.vx = vx - (1 + restitution) * vn * nx; // reflect about the normal
+  out.vy = vy - (1 + restitution) * vn * ny;
+  return out;
+}
+
+/**
+ * Net-ripple amplitude `age` seconds after the ball crossed: maximum at 0,
+ * settling linearly to 0 by `settle`. Pure, monotone-decreasing, 0 at rest.
+ */
+export function rippleAmplitude(age: number, settle = 0.5, maxAmp = 7): number {
+  if (!(age >= 0) || age >= settle) return 0;
+  return maxAmp * (1 - age / settle);
+}
+
 // --- sprint & stamina ------------------------------------------------------
 //
 // Sprint is a managed burst, not a free always-on button. While sprinting the

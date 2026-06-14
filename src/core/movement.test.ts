@@ -42,6 +42,8 @@ import {
   turnBleed,
   resolveBump,
   type BumpResult,
+  postBounce,
+  rippleAmplitude,
 } from './movement';
 
 // Integrate a held desired velocity for `seconds` at a fixed `dt`, returning the
@@ -683,6 +685,56 @@ describe('resolveBump (#130)', () => {
     const out: BumpResult = { ax: 0, ay: 0, bx: 0, by: 0 };
     const r = resolveBump(200, 0, 0, 0, 1, 0, 0.4, CAP, out);
     expect(r).toBe(out);
+  });
+});
+
+describe('postBounce (#135)', () => {
+  // post at (100, 100); ball radius + post radius hit distance = 14
+  it('reflects a ball driven into a post back the way it came', () => {
+    const r = postBounce(90, 100, 300, 0, 100, 100, 14, 0.6); // ball left of post, moving +x toward it
+    expect(r).not.toBeNull();
+    expect(r!.vx).toBeLessThan(0); // bounced back -x
+  });
+
+  it('returns null when the ball is out of post range (a clean ball through the mouth)', () => {
+    expect(postBounce(100, 140, 0, 300, 100, 100, 14, 0.6)).toBeNull(); // 40px away
+  });
+
+  it('returns null when the ball is already moving away from the post', () => {
+    expect(postBounce(90, 100, -300, 0, 100, 100, 14, 0.6)).toBeNull();
+  });
+
+  it('a glancing hit on the inside of a post deflects rather than passing through', () => {
+    const r = postBounce(100, 92, 50, 250, 100, 100, 14, 0.6); // just above the post, driving down
+    expect(r).not.toBeNull();
+    expect(r!.vy).toBeLessThan(250); // vertical component reflected/reduced
+  });
+
+  it('is deterministic for identical inputs', () => {
+    const a = postBounce(90, 100, 300, 10, 100, 100, 14, 0.6);
+    const b = postBounce(90, 100, 300, 10, 100, 100, 14, 0.6);
+    expect(a).toEqual(b);
+  });
+});
+
+describe('rippleAmplitude (#135)', () => {
+  it('is maximal at the crossing and settles to 0 by the settle time', () => {
+    expect(rippleAmplitude(0)).toBeGreaterThan(0);
+    expect(rippleAmplitude(0.5)).toBe(0);
+    expect(rippleAmplitude(0.6)).toBe(0); // stays settled
+  });
+
+  it('decays monotonically (no net motion grows back)', () => {
+    let prev = Infinity;
+    for (let i = 0; i <= 10; i++) {
+      const a = rippleAmplitude((i / 10) * 0.5);
+      expect(a).toBeLessThanOrEqual(prev);
+      prev = a;
+    }
+  });
+
+  it('is 0 for a negative age', () => {
+    expect(rippleAmplitude(-1)).toBe(0);
   });
 });
 
