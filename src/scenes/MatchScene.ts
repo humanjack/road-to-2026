@@ -1544,6 +1544,7 @@ export class MatchScene extends Phaser.Scene {
           // throw-in / goal-kick: hand possession to the taker
           this.ball.ownerIdx = this.restartTaker;
           this.lastTouchSide = taker.side;
+          this.ballCarryAng = Math.atan2(taker.faceY, taker.faceX); // seed the carry from the taker's facing (no first-frame snap)
           if (taker.side === 'home') this.setActive(this.restartTaker);
         }
         this.lastKickIdx = -1;
@@ -2377,6 +2378,7 @@ export class MatchScene extends Phaser.Scene {
         this.ball.z = 0;
         this.ball.vz = 0;
         this.ball.grounded = true;
+        this.lastTouchSide = k.side; // (#restarts) keeper touched it last → a rebound out is a corner, not a goal-kick to the attacker
         this.lastKickIdx = i;
         this.kickCooldown = 0.1;
         audio.play('save');
@@ -2700,6 +2702,10 @@ export class MatchScene extends Phaser.Scene {
   // line (a goal-kick sits out in the goal area), snap the taker to it, calm everyone,
   // and hold for a beat before play resumes. Fast + arcade — no long set-piece.
   private beginRestart(kind: 'throwin' | 'corner' | 'goalkick', bx: number, by: number, side: Side): void {
+    // If the ball goes out on the very last frame, don't open a set-piece the whistle
+    // would never let resolve — bail and let the full-time check (end of PLAY) take over,
+    // so we don't flash a THROW IN banner + ui sound under FULL TIME. (#restarts)
+    if (this.elapsed >= this.duration) return;
     let ballX: number;
     let ballY: number;
     if (kind === 'goalkick') {
@@ -2722,7 +2728,10 @@ export class MatchScene extends Phaser.Scene {
     this.ball.ownerIdx = -1;
     this.ball.curve = 0;
     this.ballShotCharge = 0;
-    // calm the set-piece: stop everyone + clear any in-flight pose
+    this.inputBuf = null; // a stalled action must not survive the set-piece hold (matches beginKickoff)
+    // calm the set-piece: stop everyone + clear any in-flight pose. NOTE: recovery is
+    // intentionally NOT cleared — a player grounded by a whiffed slide stays down and
+    // finishes recovering after play resumes (the restart hold doesn't tick recovery).
     for (const p of this.players) {
       p.vx = 0;
       p.vy = 0;
@@ -2747,13 +2756,19 @@ export class MatchScene extends Phaser.Scene {
     this.state = 'restart';
     this.stateTimer = RESTART_HOLD;
     const label = kind === 'throwin' ? 'THROW IN' : kind === 'corner' ? 'CORNER' : 'GOAL KICK';
-    this.showBanner(label, C.cyan, RESTART_HOLD * 1000 + 200);
+    this.showBanner(label, C.cyan, RESTART_HOLD * 1000); // fade exactly as play resumes (no banner lingering into live play)
     audio.play('ui');
   }
 
   // Who takes the restart: the keeper for a goal-kick, else the nearest outfielder.
+  // Always returns a valid index for `side` (never -1) so a restart can't silently
+  // stall with the ball unowned — falls back to any teammate if the ideal pick is missing.
   private pickRestartTaker(kind: 'throwin' | 'corner' | 'goalkick', side: Side, bx: number, by: number): number {
-    if (kind === 'goalkick') return this.players.findIndex((p) => p.side === side && p.role === 'GK');
+    if (kind === 'goalkick') {
+      const gk = this.players.findIndex((p) => p.side === side && p.role === 'GK');
+      if (gk >= 0) return gk;
+      // no keeper on the roster (shouldn't happen) → nearest teammate takes it
+    }
     let best = -1;
     let bd = Infinity;
     this.players.forEach((p, i) => {
@@ -2764,6 +2779,8 @@ export class MatchScene extends Phaser.Scene {
         best = i;
       }
     });
+    // last resort (all outfielders missing): any player on this side, keeper included
+    if (best < 0) best = this.players.findIndex((p) => p.side === side);
     return best;
   }
 
