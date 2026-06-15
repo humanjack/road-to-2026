@@ -842,6 +842,31 @@ export function wantSwitch(curD: number, bestD: number, hysteresis: number): boo
 }
 
 /**
+ * Team-identity (#feel): a stronger ATTACK lets the AI shoot from deeper, so star
+ * forwards feel more threatening (today every team shoots from the same range). Scales
+ * the difficulty shoot-range, centred on a 70 average rating, clamped to a sane band.
+ * Pure scalar.
+ */
+export function attackShootFactor(attack: number): number {
+  if (!Number.isFinite(attack)) return 1;
+  const f = 0.92 + (attack - 70) / 200;
+  return f < 0.8 ? 0.8 : f > 1.12 ? 1.12 : f;
+}
+
+/**
+ * Team-identity (#feel): a stronger MIDFIELD keeps closer control — less dribble
+ * speed penalty, so a passing side holds the ball better while carrying. `base` is the
+ * default dribble multiplier; high midfield eases it toward 1.0, low midfield costs a
+ * touch more. Clamped so it never out-runs a free sprint. Pure scalar.
+ */
+export function dribbleControl(midfield: number, base: number): number {
+  if (!Number.isFinite(midfield) || !Number.isFinite(base)) return base;
+  const m = base + (midfield - 70) * 0.0012;
+  const lo = base - 0.03;
+  return m < lo ? lo : m > 0.97 ? 0.97 : m;
+}
+
+/**
  * Pick the COVER defender (#feel): the defending outfielder best placed to step up and
  * confront a breakaway carrier — the nearest one that is GOAL-SIDE of the carrier
  * (between the carrier and `ownGoalX`), so cover never arrives from up-field. Used when
