@@ -280,6 +280,7 @@ const POST_RESTITUTION = 0.6; // a damped clang off the woodwork
 const GOAL_FREEZE = 1.3; // sim seconds of post-goal celebration / slow-mo fill
 const GOAL_FREEZE_RM = 0.85; // reduce-motion: trimmed (no juice to hold for)
 const KICKOFF_HOLD = 0.6; // sim seconds of the kick-off set piece before play
+const RESTART_HOLD = 0.5; // sim seconds a throw-in / corner / goal-kick set-piece holds before play resumes (#restarts; keep it arcade-quick)
 const GOAL_SKIP_AFTER = 0.5; // earliest the user may skip the cosmetic celebration tail
 const PEN_KICK_CADENCE = 0.95; // sim seconds per penalty-kick reveal (#142)
 const PEN_KICK_CADENCE_RM = 0.6; // reduce-motion: snappier (no flourish to hold)
@@ -354,8 +355,11 @@ export class MatchScene extends Phaser.Scene {
 
   private elapsed = 0;
   private duration = 120;
-  private state: 'kickoff' | 'play' | 'goal' | 'fulltime' | 'pens' = 'kickoff';
+  private state: 'kickoff' | 'play' | 'goal' | 'fulltime' | 'pens' | 'restart' = 'kickoff';
   private stateTimer = 0;
+  private lastTouchSide: Side = 'home'; // who last touched the ball (awards throw-ins / corner vs goal-kick) (#restarts)
+  private restartTaker = -1; // the player who'll take the pending restart
+  private restartKind: 'throwin' | 'corner' | 'goalkick' = 'throwin'; // how the pending restart resolves
   private kickingSide: Side = 'home';
 
   // input
@@ -1404,6 +1408,7 @@ export class MatchScene extends Phaser.Scene {
     const res = tackleOutcome({ dist: d, reach, exposure, skill: team.defense / 99, slide, roll: this.rng.next() });
     if (res === 'steal') {
       this.ball.ownerIdx = tacklerIdx;
+      this.lastTouchSide = t.side; // (#restarts)
       this.ballCarryAng = Math.atan2(t.faceY, t.faceX);
       this.ball.vx = 0;
       this.ball.vy = 0;
@@ -1516,6 +1521,37 @@ export class MatchScene extends Phaser.Scene {
     if (this.state === 'kickoff') {
       this.stateTimer -= dt;
       if (this.stateTimer <= 0) this.state = 'play';
+      return;
+    }
+    if (this.state === 'restart') {
+      // hold the set-piece briefly, then hand the ball to the taker and resume (#restarts)
+      this.stateTimer -= dt;
+      this.ball.vx = 0;
+      this.ball.vy = 0;
+      if (this.stateTimer <= 0) {
+        const taker = this.restartTaker >= 0 ? this.players[this.restartTaker] : null;
+        if (taker && this.restartKind === 'corner') {
+          // DELIVER the corner into the box (a lofted cross) — handing it to a dribbler
+          // would just see them run it straight back out their target byline.
+          const boxX = taker.side === 'home' ? this.px + this.pw * 0.88 : this.px + this.pw * 0.12;
+          const dx = boxX - taker.x;
+          const dy = this.py + this.ph / 2 - taker.y;
+          const len = Math.hypot(dx, dy) || 1;
+          const power = 540;
+          this.kickBall(taker, (dx / len) * power, (dy / len) * power, true);
+          this.loftBall(len); // a cross arc that clears ground defenders
+        } else if (taker) {
+          // throw-in / goal-kick: hand possession to the taker
+          this.ball.ownerIdx = this.restartTaker;
+          this.lastTouchSide = taker.side;
+          this.ballCarryAng = Math.atan2(taker.faceY, taker.faceX); // seed the carry from the taker's facing (no first-frame snap)
+          if (taker.side === 'home') this.setActive(this.restartTaker);
+        }
+        this.lastKickIdx = -1;
+        this.kickCooldown = 0.12; // grace so the taker isn't instantly dispossessed
+        this.restartTaker = -1;
+        this.state = 'play';
+      }
       return;
     }
     if (this.state === 'goal') {
@@ -2050,6 +2086,7 @@ export class MatchScene extends Phaser.Scene {
     this.ball.x = from.x + (vx / len) * (PR + BR + 2);
     this.ball.y = from.y + (vy / len) * (PR + BR + 2);
     this.lastKickIdx = this.players.indexOf(from);
+    this.lastTouchSide = from.side; // (#restarts)
     this.kickCooldown = 0.18;
     // A pass animates as the clipped passPose (#185) — a shorter strike with less
     // body commitment; a shot keeps the full kick wind-up + follow-through. Only
@@ -2322,6 +2359,7 @@ export class MatchScene extends Phaser.Scene {
       const res = saveOutcome(d, reach, reaction, this.rng.next());
       if (res === 'catch') {
         this.ball.ownerIdx = i;
+        this.lastTouchSide = k.side; // (#restarts)
         this.ball.vx = 0;
         this.ball.vy = 0;
         this.ball.curve = 0; // a caught ball has no curve (#133)
@@ -2340,6 +2378,7 @@ export class MatchScene extends Phaser.Scene {
         this.ball.z = 0;
         this.ball.vz = 0;
         this.ball.grounded = true;
+        this.lastTouchSide = k.side; // (#restarts) keeper touched it last → a rebound out is a corner, not a goal-kick to the attacker
         this.lastKickIdx = i;
         this.kickCooldown = 0.1;
         audio.play('save');
@@ -2518,7 +2557,6 @@ export class MatchScene extends Phaser.Scene {
 
   private updateBall(dt: number): void {
     if (this.kickCooldown > 0) this.kickCooldown -= dt;
-    if (this.wallShakeCd > 0) this.wallShakeCd -= dt; // rate-limit wall/woodwork shake (#139)
     if (this.shakeCd > 0) this.shakeCd -= dt; // global shake refractory window (#shake-polish)
 
     // possession clock (only ticks while a side actually holds the ball)
@@ -2550,6 +2588,7 @@ export class MatchScene extends Phaser.Scene {
         // the user, is their held movement direction) so a received pass settles
         // under control instead of snapping from a stale carry angle.
         const o = this.players[owner];
+        this.lastTouchSide = o.side; // (#restarts)
         this.ballCarryAng = Math.atan2(o.faceY, o.faceX);
         // mark reception time on the controlled player (one-touch window ref, #96)
         if (owner === this.activeIdx) this.lastReceiveAt = this.time.now;
@@ -2611,17 +2650,6 @@ export class MatchScene extends Phaser.Scene {
       }
     }
 
-    // top/bottom walls
-    if (this.ball.y < this.py + BR) {
-      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), false); // incoming speed before the bounce (#139)
-      this.ball.y = this.py + BR;
-      this.ball.vy = Math.abs(this.ball.vy) * 0.7;
-    } else if (this.ball.y > this.py + this.ph - BR) {
-      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), false);
-      this.ball.y = this.py + this.ph - BR;
-      this.ball.vy = -Math.abs(this.ball.vy) * 0.7;
-    }
-
     // a keeper may dive on a shot before it reaches the line
     this.resolveKeeperSaves();
     if (this.ball.ownerIdx >= 0) return; // caught — stop free motion this frame
@@ -2630,7 +2658,18 @@ export class MatchScene extends Phaser.Scene {
     // so a post hit is never miscounted as a goal. Pure, in-sim, deterministic.
     if (this.tryPostBounce()) return;
 
-    // goal lines
+    // --- ball out of play → real restarts (#restarts), replacing the old pinball
+    // bounce. Only loose balls reach here (owned balls returned above).
+    // TOUCHLINES (top/bottom) → THROW-IN to the side that did NOT put it out.
+    if (this.ball.y < this.py + BR) {
+      this.beginRestart('throwin', this.ball.x, this.py, this.lastTouchSide === 'home' ? 'away' : 'home');
+      return;
+    } else if (this.ball.y > this.py + this.ph - BR) {
+      this.beginRestart('throwin', this.ball.x, this.py + this.ph, this.lastTouchSide === 'home' ? 'away' : 'home');
+      return;
+    }
+    // GOAL LINES (left/right): a goal if it's in the mouth, else a CORNER (defender
+    // put it out) or a GOAL-KICK (attacker put it out).
     const gy0 = this.py + this.ph / 2 - this.goalH / 2;
     const gy1 = gy0 + this.goalH;
     if (this.ball.x < this.px + BR) {
@@ -2638,18 +2677,111 @@ export class MatchScene extends Phaser.Scene {
         this.scoreGoal('away');
         return;
       }
-      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), true); // off the post / byline — sharper tick (#139)
-      this.ball.x = this.px + BR;
-      this.ball.vx = Math.abs(this.ball.vx) * 0.6;
+      // home's goal line: away attack here. Home last-touch → corner to away; else goal-kick to home.
+      if (this.lastTouchSide === 'home') {
+        this.beginRestart('corner', this.px, this.ball.y < this.py + this.ph / 2 ? this.py : this.py + this.ph, 'away');
+      } else {
+        this.beginRestart('goalkick', this.px, this.py + this.ph / 2, 'home');
+      }
+      return;
     } else if (this.ball.x > this.px + this.pw - BR) {
       if (this.ball.y > gy0 && this.ball.y < gy1) {
         this.scoreGoal('home');
         return;
       }
-      this.onBallWallHit(Math.hypot(this.ball.vx, this.ball.vy), true); // off the far post / byline (#139)
-      this.ball.x = this.px + this.pw - BR;
-      this.ball.vx = -Math.abs(this.ball.vx) * 0.6;
+      if (this.lastTouchSide === 'away') {
+        this.beginRestart('corner', this.px + this.pw, this.ball.y < this.py + this.ph / 2 ? this.py : this.py + this.ph, 'home');
+      } else {
+        this.beginRestart('goalkick', this.px + this.pw, this.py + this.ph / 2, 'away');
+      }
+      return;
     }
+  }
+
+  // Set up a throw-in / corner / goal-kick (#restarts): place the ball just inside the
+  // line (a goal-kick sits out in the goal area), snap the taker to it, calm everyone,
+  // and hold for a beat before play resumes. Fast + arcade — no long set-piece.
+  private beginRestart(kind: 'throwin' | 'corner' | 'goalkick', bx: number, by: number, side: Side): void {
+    // If the ball goes out on the very last frame, don't open a set-piece the whistle
+    // would never let resolve — bail and let the full-time check (end of PLAY) take over,
+    // so we don't flash a THROW IN banner + ui sound under FULL TIME. (#restarts)
+    if (this.elapsed >= this.duration) return;
+    let ballX: number;
+    let ballY: number;
+    if (kind === 'goalkick') {
+      const sign = bx <= this.px + 1 ? 1 : -1;
+      ballX = bx + sign * this.pw * 0.05;
+      ballY = this.py + this.ph / 2;
+    } else {
+      const inx = bx <= this.px + 1 ? BR + 4 : bx >= this.px + this.pw - 1 ? -(BR + 4) : 0;
+      const iny = by <= this.py + 1 ? BR + 4 : by >= this.py + this.ph - 1 ? -(BR + 4) : 0;
+      ballX = Phaser.Math.Clamp(bx + inx, this.px + BR, this.px + this.pw - BR);
+      ballY = Phaser.Math.Clamp(by + iny, this.py + BR, this.py + this.ph - BR);
+    }
+    this.ball.x = ballX;
+    this.ball.y = ballY;
+    this.ball.vx = 0;
+    this.ball.vy = 0;
+    this.ball.vz = 0;
+    this.ball.z = 0;
+    this.ball.grounded = true;
+    this.ball.ownerIdx = -1;
+    this.ball.curve = 0;
+    this.ballShotCharge = 0;
+    this.inputBuf = null; // a stalled action must not survive the set-piece hold (matches beginKickoff)
+    // calm the set-piece: stop everyone + clear any in-flight pose. NOTE: recovery is
+    // intentionally NOT cleared — a player grounded by a whiffed slide stays down and
+    // finishes recovering after play resumes (the restart hold doesn't tick recovery).
+    for (const p of this.players) {
+      p.vx = 0;
+      p.vy = 0;
+      p.kickT = 0;
+      p.passT = 0;
+      p.slideT = 0;
+      p.diveT = 0;
+    }
+    this.restartKind = kind;
+    const taker = this.pickRestartTaker(kind, side, ballX, ballY);
+    this.restartTaker = taker;
+    if (taker >= 0) {
+      const t = this.players[taker];
+      const faceX = Math.sign(this.px + this.pw / 2 - ballX) || 1; // face infield
+      t.x = Phaser.Math.Clamp(ballX - faceX * (PR + BR), this.px + PR, this.px + this.pw - PR);
+      t.y = Phaser.Math.Clamp(ballY, this.py + PR, this.py + this.ph - PR);
+      t.faceX = faceX;
+      t.faceY = 0;
+      t.renderAng = faceX < 0 ? Math.PI : 0;
+      if (side === 'home') this.setActive(taker); // the user resumes with the ball
+    }
+    this.state = 'restart';
+    this.stateTimer = RESTART_HOLD;
+    const label = kind === 'throwin' ? 'THROW IN' : kind === 'corner' ? 'CORNER' : 'GOAL KICK';
+    this.showBanner(label, C.cyan, RESTART_HOLD * 1000); // fade exactly as play resumes (no banner lingering into live play)
+    audio.play('ui');
+  }
+
+  // Who takes the restart: the keeper for a goal-kick, else the nearest outfielder.
+  // Always returns a valid index for `side` (never -1) so a restart can't silently
+  // stall with the ball unowned — falls back to any teammate if the ideal pick is missing.
+  private pickRestartTaker(kind: 'throwin' | 'corner' | 'goalkick', side: Side, bx: number, by: number): number {
+    if (kind === 'goalkick') {
+      const gk = this.players.findIndex((p) => p.side === side && p.role === 'GK');
+      if (gk >= 0) return gk;
+      // no keeper on the roster (shouldn't happen) → nearest teammate takes it
+    }
+    let best = -1;
+    let bd = Infinity;
+    this.players.forEach((p, i) => {
+      if (p.side !== side || p.role === 'GK') return;
+      const d = dist(p.x, p.y, bx, by);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    // last resort (all outfielders missing): any player on this side, keeper included
+    if (best < 0) best = this.players.findIndex((p) => p.side === side);
+    return best;
   }
 
   // --- goals / surge -----------------------------------------------------
@@ -2854,17 +2986,6 @@ export class MatchScene extends Phaser.Scene {
     this.shake(shakeDuration(impact01), shakeIntensity(impact01), true); // a goal is THE moment — bypass the refractory (#shake-polish)
   }
 
-  // Ball striking a wall / the woodwork: a tactile shake tick above a firm-hit
-  // threshold, rate-limited by wallShakeCd so fast pinball never blurs the frame.
-  // (Also the seam #134 hangs the wall/post impact SFX off.)
-  private wallShakeCd = 0;
-  private onBallWallHit(speed: number, woodwork: boolean): void {
-    if (speed < 240 || this.wallShakeCd > 0) return;
-    this.wallShakeCd = 0.16; // a touch longer gap between pinball ticks (#shake-polish)
-    const impact = Math.min(1, speed / 980); // shotPower01-style normalisation
-    this.shake(woodwork ? 90 : 70, (woodwork ? 0.006 : 0.0035) + impact * 0.003); // trimmed woodwork/wall tick
-    audio.playImpact(woodwork ? 'post' : 'wallthud', impact); // impact voice — not reduceMotion-gated (#134)
-  }
 
   // Global shake gate (#shake-polish). A short refractory window stops back-to-back
   // impacts from chaining into a rattle; `priority` (a goal) bypasses it and restamps
