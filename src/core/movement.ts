@@ -841,6 +841,35 @@ export function wantSwitch(curD: number, bestD: number, hysteresis: number): boo
   return bestD < curD - hysteresis;
 }
 
+/**
+ * Pick the COVER defender (#feel): the defending outfielder best placed to step up and
+ * confront a breakaway carrier — the nearest one that is GOAL-SIDE of the carrier
+ * (between the carrier and `ownGoalX`), so cover never arrives from up-field. Used when
+ * the ball-chaser has been beaten, so a one-on-one break isn't a free run at goal.
+ * Returns the index into `defPos`, or -1 if no defender is goal-side. Pure.
+ */
+export function nearestCover(
+  defPos: { x: number; y: number }[],
+  carrierX: number,
+  carrierY: number,
+  ownGoalX: number,
+): number {
+  const goalIsLeft = ownGoalX < carrierX; // our goal on the -x side of the carrier?
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < defPos.length; i++) {
+    const d = defPos[i];
+    const goalSide = goalIsLeft ? d.x <= carrierX : d.x >= carrierX;
+    if (!goalSide) continue;
+    const dd = Math.hypot(d.x - carrierX, d.y - carrierY);
+    if (dd < bestD) {
+      bestD = dd;
+      best = i;
+    }
+  }
+  return best;
+}
+
 export function chooseSwitchTarget(
   cands: { x: number; y: number }[],
   ballX: number,
