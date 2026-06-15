@@ -41,6 +41,7 @@ import {
   keeperTarget,
   saveOutcome,
   chooseSwitchTarget,
+  wantSwitch,
   assignMarks,
   markPoint,
   shotPower01,
@@ -254,6 +255,11 @@ const WORLD_MARGIN = 112; // run-off/stand strip between the pitch and the world
 const WORLD_W = PITCH_X + PITCH_W + WORLD_MARGIN; // 2400
 const WORLD_H = PITCH_Y + PITCH_H + WORLD_MARGIN; // 1440
 const PERSP_FAR = 0.74; // broadcast-perspective (#192): the far touchline renders at 74% of the near width
+// Defensive auto-switch feel: a candidate must be this many px CLOSER to the ball
+// than the player you control before auto-switch hands it over (anti-thrash), and a
+// switch then settles for AUTO_SWITCH_CD before another can fire.
+const SWITCH_HYSTERESIS = 48;
+const AUTO_SWITCH_CD = 0.2;
 const MAX_LEAN = 0.3; // max body-lean angle (rad) into a hard cut (#129)
 const CARRY_EXPOSE_CUE = 0.3; // ballExposure above which a knock-on streaks / shows the contest ring (#136)
 const RUN_BASE_FREQ = 18; // celebrate-hop phase rate (rad/s); the run GAIT is now per-player displacement-driven (#185)
@@ -1596,18 +1602,30 @@ export class MatchScene extends Phaser.Scene {
     }
     // manual defensive switching: keep control of the player you have (switch via K)
     if (!this.autoSwitch) return;
-    // otherwise nearest home outfielder
-    let best = this.activeIdx;
+    // A recent switch (manual K OR a prior auto-switch) holds control briefly so it
+    // can't thrash, and so a deliberate K choice isn't instantly overridden (#feel).
+    if (this.switchCd > 0) return;
+    // nearest home outfielder to the loose ball
+    let best = -1;
     let bestD = Infinity;
-    this.players.forEach((p, i) => {
-      if (p.side !== 'home' || p.role === 'GK') return;
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      if (p.side !== 'home' || p.role === 'GK') continue;
       const d = dist(p.x, p.y, this.ball.x, this.ball.y);
       if (d < bestD) {
         bestD = d;
         best = i;
       }
-    });
-    if (best !== this.activeIdx) this.setActive(best);
+    }
+    if (best < 0 || best === this.activeIdx) return;
+    // hysteresis: only steal control if `best` is clearly closer than who we control,
+    // so a marginally-nearer team-mate can't flicker control (the #1 defence gripe).
+    const cur = this.players[this.activeIdx];
+    const curD = cur && cur.side === 'home' && cur.role !== 'GK' ? dist(cur.x, cur.y, this.ball.x, this.ball.y) : Infinity;
+    if (wantSwitch(curD, bestD, SWITCH_HYSTERESIS)) {
+      this.setActive(best);
+      this.switchCd = AUTO_SWITCH_CD; // brief settle so the next frame can't re-thrash
+    }
   }
 
   private switchCd = 0; // brief cooldown so tapping switch can't thrash control

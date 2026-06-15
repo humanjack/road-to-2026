@@ -827,6 +827,20 @@ export function saveOutcome(distToBall: number, reach: number, reaction: number,
  * ball (a strong bonus), then nearest to the ball. Skips `currentIdx` unless it
  * is the only option. Returns the index into `cands`, or -1 if empty.
  */
+/**
+ * Auto-switch hysteresis (#feel): should defensive auto-switch HAND control to the
+ * candidate nearest the loose ball (`bestD` from the ball) when we already control a
+ * player `curD` from the ball? Only if the candidate is at least `hysteresis` px
+ * CLOSER — otherwise a marginally-nearer team-mate flickers control frame-to-frame
+ * (the #1 defence frustration). A non-finite `curD` (no valid current) always yields
+ * a switch. Pure boolean, allocation-free.
+ */
+export function wantSwitch(curD: number, bestD: number, hysteresis: number): boolean {
+  if (!Number.isFinite(bestD)) return false;
+  if (!Number.isFinite(curD)) return true;
+  return bestD < curD - hysteresis;
+}
+
 export function chooseSwitchTarget(
   cands: { x: number; y: number }[],
   ballX: number,

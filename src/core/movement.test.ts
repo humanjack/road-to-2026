@@ -34,6 +34,7 @@ import {
   saveOutcome,
   SAVE_REACH,
   chooseSwitchTarget,
+  wantSwitch,
   assignMarks,
   markPoint,
   shotPower01,
@@ -527,6 +528,28 @@ describe('chooseSwitchTarget', () => {
   it('skips the current player and returns -1 when no other candidate exists', () => {
     const cands = [{ x: 500, y: 360 }];
     expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, 0)).toBe(-1);
+  });
+});
+
+describe('wantSwitch (auto-switch hysteresis #feel)', () => {
+  const H = 48;
+  it('switches only when the candidate is clearly (>= hysteresis) closer', () => {
+    expect(wantSwitch(200, 140, H)).toBe(true); // 60px closer → switch
+    expect(wantSwitch(200, 170, H)).toBe(false); // only 30px closer → hold (anti-thrash)
+    expect(wantSwitch(200, 152, H)).toBe(false); // exactly hysteresis-1 → hold
+    expect(wantSwitch(200, 151, H)).toBe(true); // just over → switch
+  });
+  it('never switches to a player who is further or equal', () => {
+    expect(wantSwitch(120, 120, H)).toBe(false);
+    expect(wantSwitch(120, 300, H)).toBe(false);
+  });
+  it('always switches when there is no valid current player (non-finite curD)', () => {
+    expect(wantSwitch(Infinity, 500, H)).toBe(true);
+    expect(wantSwitch(NaN, 500, H)).toBe(true);
+  });
+  it('never switches to a non-finite candidate distance', () => {
+    expect(wantSwitch(200, Infinity, H)).toBe(false);
+    expect(wantSwitch(200, NaN, H)).toBe(false);
   });
 });
 
