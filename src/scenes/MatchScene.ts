@@ -936,6 +936,87 @@ export class MatchScene extends Phaser.Scene {
     g.strokeRect(px - 22, py - 22, pw + 44, ph + 44);
     // --- perimeter ad boards: a ring of alternating panels just outside the pitch
     this.drawAdBoards(g, px, py, pw, ph);
+    // --- broadcast furniture (#198): touchline cameras, dugouts, corner floodlights
+    this.drawFloodlights(g, px, py, pw, ph);
+    this.drawSidelineCameras(g, px, py, pw, ph);
+    this.drawDugouts(g, px, py, pw, ph);
+  }
+
+  // A broadcast camera operator glyph: a tripod + a camera body + a lens facing the
+  // pitch. Small, drawn once into the parallax layer (#198).
+  private drawCameraOp(g: Phaser.GameObjects.Graphics, x: number, y: number, facing: number): void {
+    // facing: +1 lens points down (+y, toward a top-touchline pitch), -1 points up.
+    // Light greys so the rig reads against the dark stand behind it.
+    g.fillStyle(0x9aa3b5, 1); // tripod legs
+    g.fillTriangle(x - 6, y + 8, x + 6, y + 8, x, y - 2);
+    g.fillStyle(0x2b3340, 1); // operator silhouette behind the rig
+    g.fillCircle(x + facing * -7, y - 6, 3.2);
+    g.fillStyle(0x4a5364, 1); // camera body
+    g.fillRect(x - 7, y - 10, 15, 9);
+    g.fillStyle(0x6b7588, 1); // top handle/viewfinder
+    g.fillRect(x - 2, y - 14, 6, 4);
+    g.fillStyle(0xcfe8ff, 1); // lens, facing the pitch
+    g.fillCircle(x, y - 5 + facing * 6, 2.8);
+  }
+
+  // A row of broadcast cameras along the far + near touchlines (#198), just beyond
+  // the ad boards, facing the pitch. Deterministic spacing, drawn once.
+  private drawSidelineCameras(g: Phaser.GameObjects.Graphics, px: number, py: number, pw: number, ph: number): void {
+    const step = 198;
+    const inset = 120; // keep the run clear of the corners
+    for (let x = px + inset; x <= px + pw - inset; x += step) {
+      this.drawCameraOp(g, x, py - 44, 1); // far touchline (top), lens points down at the pitch
+    }
+    // a sparser run on the near touchline (every other slot)
+    for (let x = px + inset + step / 2; x <= px + pw - inset; x += step * 2) {
+      this.drawCameraOp(g, x, py + ph + 46, -1);
+    }
+  }
+
+  // Two team-tinted dugout shelters on the near touchline, flanking the halfway
+  // line (#198), like the broadcast benches in the reference. Drawn once.
+  private drawDugouts(g: Phaser.GameObjects.Graphics, px: number, py: number, pw: number, ph: number): void {
+    const cxp = px + pw / 2;
+    const yTop = py + ph + 30; // just below the bottom ad board
+    const dw = 150;
+    const dh = 26;
+    for (const [x0, tint] of [
+      [cxp - 40 - dw, this.shade(this.homeColor, 0.85)],
+      [cxp + 40, this.shade(this.awayColor, 0.85)],
+    ] as [number, number][]) {
+      g.fillStyle(0x0c1119, 0.9); // shelter shadow box
+      g.fillRoundedRect(x0, yTop, dw, dh, 6);
+      g.fillStyle(tint, 0.9); // team-tinted roof band
+      g.fillRoundedRect(x0, yTop, dw, 7, 4);
+      g.fillStyle(0x5a6072, 0.8); // a hint of a bench row inside
+      g.fillRect(x0 + 8, yTop + dh - 8, dw - 16, 4);
+    }
+  }
+
+  // Four corner floodlight pylons framing the arena (#198): a tall mast + a lamp
+  // head with a soft glow. On the parallax backdrop, drawn once.
+  private drawFloodlights(g: Phaser.GameObjects.Graphics, px: number, py: number, pw: number, ph: number): void {
+    const rX = px + pw;
+    const bY = py + ph;
+    const out = 78; // how far outside the pitch corner the mast base sits
+    const mastH = 104;
+    for (const [bx, by] of [
+      [px - out, py - out],
+      [rX + out, py - out],
+      [px - out, bY + out],
+      [rX + out, bY + out],
+    ] as [number, number][]) {
+      const topY = by - mastH; // mast rises up-screen
+      g.lineStyle(4, 0x39414f, 1); // mast
+      g.lineBetween(bx, by, bx, topY);
+      g.fillStyle(0x2b313d, 1); // lamp housing
+      g.fillRoundedRect(bx - 16, topY - 10, 32, 12, 3);
+      for (let l = 0; l < 4; l++) {
+        g.fillStyle(0xfff4cf, 0.95); // lamp bulbs
+        g.fillCircle(bx - 12 + l * 8, topY - 4, 2.4);
+      }
+      this.softGlow(g, bx, topY - 4, 70, 0xfff0c0, 0.05); // soft light bloom
+    }
   }
 
   // A ring of alternating-colour advertising boards just outside the touchlines/
