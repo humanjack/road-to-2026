@@ -44,6 +44,7 @@ import {
   wantSwitch,
   assignMarks,
   markPoint,
+  nearestCover,
   shotPower01,
   shotRelease,
   curveAccel,
@@ -2114,6 +2115,32 @@ export class MatchScene extends Phaser.Scene {
       });
     }
 
+    // COVER defender (#feel): if the carrier has BEATEN the ball-chaser and is
+    // threatening inside the defending half, the nearest goal-side defender steps up
+    // to confront — so a one-on-one break isn't a free run at goal (the chaser alone
+    // used to track the carrier; markers stayed on their own men).
+    let coverIdx = -1;
+    if (owner >= 0) {
+      const carrier = this.players[owner];
+      const defSide: Side = carrier.side === 'home' ? 'away' : 'home';
+      const ownGoalX = defSide === 'home' ? this.px : this.px + this.pw;
+      const chaserI = chaser[defSide];
+      const chaserBeaten = chaserI < 0 || dist(this.players[chaserI].x, this.players[chaserI].y, carrier.x, carrier.y) > this.pw * 0.07;
+      const carrierThreatening = defSide === 'home' ? carrier.x < this.px + this.pw * 0.55 : carrier.x > this.px + this.pw * 0.45;
+      if (chaserBeaten && carrierThreatening) {
+        const cIdx: number[] = [];
+        const cPos: { x: number; y: number }[] = [];
+        this.players.forEach((q, qi) => {
+          if (q.side === defSide && q.role !== 'GK' && qi !== chaserI) {
+            cIdx.push(qi);
+            cPos.push({ x: q.x, y: q.y });
+          }
+        });
+        const sel = nearestCover(cPos, carrier.x, carrier.y, ownGoalX);
+        if (sel >= 0) coverIdx = cIdx[sel];
+      }
+    }
+
     this.players.forEach((p, i) => {
       if (p.isUser) return;
       p.sprinting = false; // AI never sprints; keep the knock-on flag clean for the carry block
@@ -2189,6 +2216,17 @@ export class MatchScene extends Phaser.Scene {
           tx = p.hx + attackDir * this.pw * 0.018 + ballAdvance * this.pw * 0.032 * attackDir;
           ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.2;
         }
+      } else if (i === coverIdx) {
+        // COVER: the chaser was beaten — step up just goal-side of the carrier and
+        // press, winning it if the poke comes into reach (#feel).
+        const carrier = this.players[this.ball.ownerIdx];
+        const ownGoalX = p.side === 'home' ? this.px : this.px + this.pw;
+        const toGoal = Math.sign(ownGoalX - carrier.x) || -attackDir;
+        tx = carrier.x + toGoal * 18; // sit a touch goal-side, confronting head-on
+        ty = carrier.y;
+        if (p.tackleCd <= 0 && dist(p.x, p.y, this.ball.x, this.ball.y) < POKE_REACH) {
+          this.attemptTackle(i, this.rng.bool(0.12 * this.diff.aiAccuracy));
+        }
       } else if (markTarget[i]) {
         // OUT OF POSSESSION, marking a man: sit goal-side of him (assigned above)
         tx = markTarget[i].x;
@@ -2199,6 +2237,16 @@ export class MatchScene extends Phaser.Scene {
         const ballAdvance = (this.ball.x - (this.px + this.pw / 2)) / this.pw; // -0.5..0.5
         tx = p.hx + attackDir * -this.pw * 0.0045 + ballAdvance * this.pw * 0.04 * attackDir;
         ty = p.hy + (this.ball.y - (this.py + this.ph / 2)) * 0.18;
+        // box compactness (#feel): when the carrier is deep in our third, spare
+        // defenders pinch toward the goal centre to crowd the danger area.
+        const carrierDeep = this.ball.ownerIdx >= 0 && (attackDir === 1
+          ? this.ball.x < this.px + this.pw * 0.28
+          : this.ball.x > this.px + this.pw * 0.72);
+        if (carrierDeep) {
+          const goalCx = attackDir === 1 ? this.px : this.px + this.pw;
+          tx += (goalCx - tx) * 0.18;
+          ty += (this.py + this.ph / 2 - ty) * 0.12;
+        }
       }
 
       this.steer(p, tx, ty, this.playerSpeed(p, p.side) * speedScale, dt);

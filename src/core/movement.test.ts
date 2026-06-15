@@ -35,6 +35,7 @@ import {
   SAVE_REACH,
   chooseSwitchTarget,
   wantSwitch,
+  nearestCover,
   assignMarks,
   markPoint,
   shotPower01,
@@ -528,6 +529,39 @@ describe('chooseSwitchTarget', () => {
   it('skips the current player and returns -1 when no other candidate exists', () => {
     const cands = [{ x: 500, y: 360 }];
     expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, 0)).toBe(-1);
+  });
+});
+
+describe('nearestCover (#feel breakaway cover defender)', () => {
+  // our goal on the left (x=64); a carrier breaking through at x=600
+  const ownGoalX = 64;
+  const carrierX = 600;
+  const carrierY = 360;
+
+  it('picks the nearest defender that is goal-side of the carrier', () => {
+    const defPos = [
+      { x: 700, y: 360 }, // 0: up-field of the carrier (wrong side) — must be ignored
+      { x: 520, y: 380 }, // 1: goal-side + closest
+      { x: 300, y: 360 }, // 2: goal-side but further
+    ];
+    expect(nearestCover(defPos, carrierX, carrierY, ownGoalX)).toBe(1);
+  });
+
+  it('returns -1 when no defender is goal-side (all up-field of the carrier)', () => {
+    const defPos = [
+      { x: 700, y: 360 },
+      { x: 800, y: 400 },
+    ];
+    expect(nearestCover(defPos, carrierX, carrierY, ownGoalX)).toBe(-1);
+  });
+
+  it('works for a goal on the right too (mirrored)', () => {
+    const rightGoal = 1200;
+    const defPos = [
+      { x: 500, y: 360 }, // up-field (wrong side) for a right goal
+      { x: 800, y: 360 }, // goal-side (toward x=1200) + closest
+    ];
+    expect(nearestCover(defPos, 700, 360, rightGoal)).toBe(1);
   });
 });
 
