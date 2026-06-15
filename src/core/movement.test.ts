@@ -36,6 +36,8 @@ import {
   chooseSwitchTarget,
   wantSwitch,
   nearestCover,
+  attackShootFactor,
+  dribbleControl,
   assignMarks,
   markPoint,
   shotPower01,
@@ -529,6 +531,39 @@ describe('chooseSwitchTarget', () => {
   it('skips the current player and returns -1 when no other candidate exists', () => {
     const cands = [{ x: 500, y: 360 }];
     expect(chooseSwitchTarget(cands, ballX, ballY, ownGoalX, 0)).toBe(-1);
+  });
+});
+
+describe('attackShootFactor (#feel team identity)', () => {
+  it('is 1 at the average rating (70) … wait, centred at 0.92', () => {
+    expect(attackShootFactor(70)).toBeCloseTo(0.92, 6);
+  });
+  it('a stronger attack shoots from deeper (monotonic in attack)', () => {
+    expect(attackShootFactor(99)).toBeGreaterThan(attackShootFactor(70));
+    expect(attackShootFactor(70)).toBeGreaterThan(attackShootFactor(50));
+  });
+  it('clamps to a sane band so no rating breaks shooting', () => {
+    expect(attackShootFactor(999)).toBe(1.12);
+    expect(attackShootFactor(-50)).toBe(0.8);
+  });
+  it('is finite-safe', () => {
+    expect(attackShootFactor(NaN)).toBe(1);
+  });
+});
+
+describe('dribbleControl (#feel team identity)', () => {
+  const base = 0.9;
+  it('a stronger midfield keeps closer control (less penalty)', () => {
+    expect(dribbleControl(99, base)).toBeGreaterThan(dribbleControl(70, base));
+    expect(dribbleControl(70, base)).toBeCloseTo(base, 6);
+    expect(dribbleControl(50, base)).toBeLessThan(base);
+  });
+  it('never exceeds 0.97 (a carrier can never out-run a free sprint)', () => {
+    expect(dribbleControl(999, base)).toBeLessThanOrEqual(0.97);
+  });
+  it('clamps the low end and is finite-safe', () => {
+    expect(dribbleControl(-999, base)).toBeCloseTo(base - 0.03, 6);
+    expect(dribbleControl(NaN, base)).toBe(base);
   });
 });
 

@@ -45,6 +45,8 @@ import {
   assignMarks,
   markPoint,
   nearestCover,
+  attackShootFactor,
+  dribbleControl,
   shotPower01,
   shotRelease,
   curveAccel,
@@ -286,8 +288,8 @@ const CHIP_CHARGE = 0.18; // a shot released below this charge chips (lofts) ins
 const DIFF: Record<Difficulty, { aiSpeed: number; aiShootRange: number; aiAccuracy: number; userBoost: number }> = {
   // aiShootRange (px from goal at which the AI shoots) scaled ~1.9× for the 11v11
   // pitch (#183) so the AI still shoots from a sensible fraction of the pitch.
-  casual: { aiSpeed: 0.86, aiShootRange: 435, aiAccuracy: 0.55, userBoost: 1.08 },
-  pro: { aiSpeed: 1.0, aiShootRange: 510, aiAccuracy: 0.72, userBoost: 1.0 },
+  casual: { aiSpeed: 0.86, aiShootRange: 435, aiAccuracy: 0.64, userBoost: 1.08 }, // 0.55→0.64: casual reads as beatable, not scripted (#feel)
+  pro: { aiSpeed: 1.0, aiShootRange: 510, aiAccuracy: 0.74, userBoost: 1.0 },
   legend: { aiSpeed: 1.12, aiShootRange: 605, aiAccuracy: 0.86, userBoost: 0.95 },
 };
 
@@ -2169,7 +2171,9 @@ export class MatchScene extends Phaser.Scene {
         // dribble toward opponent goal; shoot if in range; pass if pressured
         const distGoal = Math.abs(p.x - oppGoalX);
         const pressed = this.nearestOpponentDist(p) < this.pw * 0.06;
-        if (distGoal < this.diff.aiShootRange) {
+        // team identity (#feel): a stronger attack shoots from deeper → more threatening
+        const team = p.side === 'home' ? this.home : this.away;
+        if (distGoal < this.diff.aiShootRange * attackShootFactor(team.attack)) {
           this.aiShoot(p, oppGoalX, oppGoalY);
           return;
         }
@@ -2434,9 +2438,10 @@ export class MatchScene extends Phaser.Scene {
     const puBoost = e.boost > 0 ? 1.28 : 1;
     const puFreeze = e.frozen > 0 ? 0.5 : 1;
     // close control: carrying the ball costs a touch of top speed (the trade-off
-    // a defender exploits). O(1) owner check — no indexOf.
+    // a defender exploits). A stronger MIDFIELD keeps closer control (#feel team
+    // identity) — less penalty. O(1) owner check — no indexOf.
     const owns = this.ball.ownerIdx >= 0 && this.players[this.ball.ownerIdx] === p;
-    const dribble = owns ? DRIBBLE_SPEED_MUL : 1;
+    const dribble = owns ? dribbleControl(team.midfield, DRIBBLE_SPEED_MUL) : 1;
     return base * surgeBoost * userBoost * puBoost * puFreeze * dribble;
   }
 
